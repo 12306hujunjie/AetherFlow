@@ -266,6 +266,9 @@ class ParallelFanOutComposition(Composition):
         # Store results for potential fan-in
         state["__pre_fan_out_state"] = dict(frozen_state)
         state["__parallel_results"] = parallel_results
+        
+        # Return the parallel results
+        return parallel_results
     
     def fan_in(self, aggregator: Node) -> 'ParallelFanInComposition':
         """Complete the fan-out/fan-in pattern with an aggregator node."""
@@ -296,12 +299,15 @@ class ParallelFanInComposition(Composition):
         aggregator_state = GraphState({**original_state, "parallel_results": p_results})
         
         print(f"  - Fanning in to aggregator: {self.aggregator}")
-        self.aggregator._execute(aggregator_state, container)
+        result = self.aggregator._execute(aggregator_state, container)
         
         # Merge results from the aggregator back into the main state
         new_keys = aggregator_state.keys() - original_state.keys() - {"parallel_results"}
         for key in new_keys:
             state[key] = aggregator_state[key]
+        
+        # Return the aggregator result
+        return result
 
 class ConditionalComposition(Composition):
     """Conditional branching based on boolean output."""
@@ -333,9 +339,10 @@ class ConditionalComposition(Composition):
         if condition_result in self.branches:
             selected_branch = self.branches[condition_result]
             print(f"  - Condition is {condition_result}, executing branch: {selected_branch.name}")
-            selected_branch._execute(state, container)
+            return selected_branch._execute(state, container)
         else:
             print(f"  - No branch defined for condition result: {condition_result}")
+            return None
 
 class RepeatComposition(Composition):
     """Repeat a node for a fixed number of times with early exit support."""
@@ -348,6 +355,7 @@ class RepeatComposition(Composition):
     def _execute(self, state: GraphState, container: BaseFlowContainer):
         print(f"--- Executing Repeat Composition: {self.name} ---")
         
+        last_result = None
         for i in range(self.times):
             print(f"  - Iteration {i + 1}/{self.times}")
             result = self.node._execute(state, container)
@@ -356,6 +364,13 @@ class RepeatComposition(Composition):
             if isinstance(result, LoopControl) and result == LoopControl.BREAK:
                 print(f"  - Loop terminated early at iteration {i + 1} due to BREAK signal")
                 break
+            
+            # Store the last valid result (not a control signal)
+            if not isinstance(result, LoopControl):
+                last_result = result
+        
+        # Return the last valid result or None if no valid results were produced
+        return last_result
 
 # --- 6. Decorator ---
 
