@@ -6,7 +6,7 @@
 import sys
 import os
 
-from aetherflow import node, LoopControl, AppContainer
+from aetherflow import node, LoopControl, AppContext
 
 # 测试基本节点
 @node
@@ -71,8 +71,10 @@ def parallel_task_b(sum: int) -> dict:
 @node
 def combine_parallel_results(parallel_results: dict) -> dict:
     """合并并行结果"""
+    # 新的键名格式：如果节点名唯一直接使用节点名，否则使用 node[index] 格式
     task_a = parallel_results.get('parallel_task_a', {}).get('task_a_result', '')
     task_b = parallel_results.get('parallel_task_b', {}).get('task_b_result', '')
+    
     combined = f"Combined: {task_a} and {task_b}"
     print(f"Combining results: {combined}")
     return {"combined_result": combined}
