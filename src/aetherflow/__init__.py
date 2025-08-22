@@ -1,14 +1,28 @@
 import inspect
 import logging
+import time
 from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_completed
-from typing import Callable, Any, List, Dict
+from dataclasses import dataclass
+from typing import Callable, Any, List, Dict, Optional
 
 from dependency_injector import containers, providers
 from dependency_injector.wiring import inject, Provide
 from pydantic import validate_call, ConfigDict
 
-
 logger = logging.getLogger("aetherflow")
+
+
+
+@dataclass
+class ParallelResult:
+    """Pydantic model for recording parallel execution results and exception stacks."""
+    node_name: str
+    success: bool
+    result: Any = None
+    error: Optional[str] = None
+    error_traceback: Optional[str] = None
+    execution_time: Optional[float] = None
+
 
 class LoopControlException(Exception):
     pass
@@ -28,13 +42,9 @@ class Node:
 
     def __init__(self, func: Callable, name: str = None, is_start_node: bool = True):
         # 配置Pydantic支持任意类型（包括dependency injection的类型）
-        self.func = validate_call(
-            validate_return=True,
-            config=ConfigDict(arbitrary_types_allowed=True)
-        )(inject(func))
+        self.func = func
         self.name = name or func.__name__
         self.is_start_node = is_start_node
-
 
     def __call__(self, *args, **kwargs):
         return self.func(*args, **kwargs)
@@ -48,9 +58,19 @@ class Node:
         return sequential_composition(self, next_node)
 
     def fan_out_to(self, nodes: List['Node'], executor: str = 'thread',
-                   max_workers: int = None) -> 'Node':
+                   max_workers: Optional[int] = None) -> 'Node':
         """Fan out to multiple nodes for parallel execution."""
         return parallel_fan_out(self, nodes, executor, max_workers)
+    
+    def fan_in(self, aggregator: 'Node') -> 'Node':
+        """Aggregate results using the specified aggregator node."""
+        return parallel_fan_in(self, aggregator)
+    
+    def fan_out_in(self, targets: List['Node'], aggregator: 'Node',
+                   executor: str = 'thread',
+                   max_workers: Optional[int] = None) -> 'Node':
+        """Complete fan-out and fan-in operation in one step."""
+        return parallel_fan_out_in(self, targets, aggregator, executor, max_workers)
 
     def branch_on(self, conditions: Dict[bool, 'Node']) -> 'Node':
         """Branch execution based on the boolean output of this node."""
@@ -77,90 +97,167 @@ def sequential_composition(left: Node, right: Node) -> Node:
     return Node(run, is_start_node=False)
 
 
-def parallel_fan_out(source: Node, targets: List[Node], executor: str = 'thread', max_workers: int = None) -> Node:
-    """Parallel fan-out execution that distributes to multiple nodes."""
+# 定义并行任务执行函数
+def execute_target_node(node: Node, input_data):
+    """Execute a single target node with the provided input."""
+    import traceback
+    start_time = time.time()
+
+    try:
+        result = node(input_data)
+        execution_time = time.time() - start_time
+
+        return ParallelResult(
+            node_name=node.name,
+            success=True,
+            result=result,
+            execution_time=execution_time
+        )
+    except Exception as e:
+        execution_time = time.time() - start_time
+        error_traceback = traceback.format_exc()
+        logger.error(f"Node '{node.name}' failed: {e}")
+
+        return ParallelResult(
+            node_name=node.name,
+            success=False,
+            error=str(e),
+            error_traceback=error_traceback,
+            execution_time=execution_time
+        )
+
+
+def parallel_fan_out(source: Node, targets: List[Node],
+                    executor: str = 'thread',
+                    max_workers: Optional[int] = None) -> Node:
+    """
+    Simplified parallel fan-out execution with direct parameter passing.
+    
+    Args:
+        source: Source node to execute first
+        targets: List of target nodes for parallel execution
+        executor: 'thread' or 'process' executor type
+        max_workers: Maximum worker threads/processes
+    
+    Returns:
+        Node that performs parallel fan-out execution
+    """
+    if not targets:
+        raise ValueError("Target nodes list cannot be empty")
+    
     executor_map = {'thread': ThreadPoolExecutor, 'process': ProcessPoolExecutor}
 
-    def run(state: dict, context: BaseFlowContext = Provide[BaseFlowContext]):
+    def run(*args, **kwargs):
         target_names = [t.name for t in targets]
         composition_name = f"({source.name} -> [{', '.join(target_names)}])"
-        print(f"--- Executing Parallel Fan-Out: {composition_name} ---")
+        logger.info(f"Executing Parallel Fan-Out: {composition_name}")
+        
+        # 执行源节点
+        source_result = source(*args, **kwargs)
 
-        # Execute source first
-        source.run(state, context)
+        # 执行并行任务
+        parallel_results = {}
+        
+        with executor_map[executor](max_workers=max_workers) as executor_instance:
+            # 提交所有并行任务
+            future_to_node = {
+                executor_instance.submit(execute_target_node, node, source_result): node
+                for node in targets
+            }
+            
+            # 收集结果
+            for future in as_completed(future_to_node):
+                node = future_to_node[future]
+                try:
+                    parallel_result = future.result()
+                    
+                    # 生成唯一的结果键
+                    result_key = parallel_result.node_name
 
-        # Store pre-fan-out state for fan-in
-        original_state = dict(state)
-        state['__pre_fan_out_state'] = original_state
+                    counter = 1
+                    while result_key in parallel_results:
+                        result_key = f"{parallel_result.node_name}[{counter}]"
+                        counter += 1
+                    
+                    parallel_results[result_key] = parallel_result
+                    logger.debug(f"Collected result from '{result_key}': success={parallel_result.success}")
+                    
+                except Exception as e:
+                    import traceback
+                    logger.error(f"Failed to get result from '{node.name}': {e}")
 
-        print(f"  - Fanning out with state keys: {list(original_state.keys())} using '{executor}' executor.")
-
-        # Generate better keys for parallel results
-        def generate_result_key(node: Node, index: int, all_nodes: List[Node]) -> str:
-            # Count occurrences of this node name
-            node_count = sum(1 for n in all_nodes if n.name == node.name)
-            if node_count == 1:
-                # If node name is unique, use it directly
-                return node.name
-            else:
-                # If there are duplicates, use a cleaner format
-                return f"{node.name}[{index}]"
-
-        def run_isolated_node(node: Node, node_index: int, initial_state: dict, node_context: BaseFlowContext):
-            # Create isolated state for this thread
-            thread_state = dict(initial_state)
-            result = node.run(thread_state, node_context)
-
-            # Generate a clean result key
-            result_key = generate_result_key(node, node_index, targets)
-
-            # Return the result key and its result
-            return result_key, thread_state.get(node.name, result)
-
-        with executor_map[executor](max_workers=max_workers) as exec_instance:
-            futures = [exec_instance.submit(run_isolated_node, node, i, original_state, context)
-                       for i, node in enumerate(targets)]
-            parallel_results = {}
-
-            for future in as_completed(futures):
-                node_key, node_result = future.result()
-                parallel_results[node_key] = node_result
-                print(f"  - Collected result from '{node_key}': {node_result}")
-
-        # Store parallel results in state for potential fan-in
-        state['__parallel_results'] = parallel_results
-        print(f"  - Stored parallel results: {parallel_results}")
-
-        # Return the parallel results
+                    parallel_results[node.name] = ParallelResult(
+                        node_name=node.name,
+                        success=False,
+                        error=str(e),
+                        error_traceback=traceback.format_exc()
+                    )
+        
+        # 返回并行结果
+        logger.info(f"Parallel fan-out completed with {len(parallel_results)} results")
         return parallel_results
-
-    # Create a new Node with the fan-out execution
+    
+    # 创建新的Node
     target_names = [t.name for t in targets]
-    return Node(func=run, name=f"({source.name} -> [{', '.join(target_names)}])")
+    composition_name = f"({source.name} -> [{', '.join(target_names)}])"
+    
+    return Node(func=run, name=composition_name)
 
 
 def parallel_fan_in(fan_out_node: Node, aggregator: Node) -> Node:
-    """Parallel fan-in aggregation that combines results from fan-out."""
+    """
+    Simplified parallel fan-in aggregation with direct parameter passing.
+    
+    Args:
+        fan_out_node: The fan-out node to execute first
+        aggregator: The aggregator node that combines results
+    
+    Returns:
+        Node that performs fan-in aggregation
+    """
 
-    @inject
-    def _execute(state: dict, context: BaseFlowContext = Provide[BaseFlowContext]):
+    def run(*args, **kwargs):
         composition_name = f"({fan_out_node.name} -> {aggregator.name})"
-        print(f"--- Executing Parallel Fan-In: {composition_name} ---")
-
-        # Execute the fan-out first
-        fan_out_node.run(state, context)
-
-        # Execute aggregator
-        aggregator_result = aggregator.run(state, context)
-
-        # Update main state with aggregator results
-        if isinstance(aggregator_result, dict):
-            state.update(aggregator_result)
-        elif aggregator_result is not None:
-            state[aggregator.name] = aggregator_result
+        logger.info(f"Executing Parallel Fan-In: {composition_name}")
+        
+        # 执行fan-out节点，获取并行结果
+        parallel_results = fan_out_node(*args, **kwargs)
+        
+        # 将并行结果作为参数传递给聚合器
+        aggregator_result = aggregator(parallel_results)
+        
+        logger.info(f"Fan-in aggregation completed successfully")
         return aggregator_result
+    
+    return Node(func=run, name=f"({fan_out_node.name} -> {aggregator.name})")
 
-    return Node(func=_execute, name=f"({fan_out_node.name} -> {aggregator.name})")
+
+def parallel_fan_out_in(source: Node, targets: List[Node], aggregator: Node,
+                       executor: str = 'thread',
+                       max_workers: Optional[int] = None) -> Node:
+    """
+    Simplified convenience function that combines fan-out and fan-in into a single operation.
+    
+    Args:
+        source: Source node to execute first
+        targets: List of target nodes for parallel execution
+        aggregator: Aggregator node that combines parallel results
+        executor: 'thread' or 'process' executor type
+        max_workers: Maximum worker threads/processes
+    
+    Returns:
+        Node that performs complete fan-out-in operation
+    """
+    # 创建fan-out节点
+    fan_out_node = parallel_fan_out(
+        source=source,
+        targets=targets,
+        executor=executor,
+        max_workers=max_workers
+    )
+    
+    # 创建fan-in节点
+    return parallel_fan_in(fan_out_node, aggregator)
 
 
 def conditional_composition(condition_node: Node, branches: Dict[bool, Node]) -> Node:
@@ -225,6 +322,10 @@ def repeat_composition(node: Node, times: int) -> Node:
 
 def node(func: Callable) -> Node:
     """Decorator to create a Node from a function."""
+    func = validate_call(
+        validate_return=True,
+        config=ConfigDict(arbitrary_types_allowed=True)
+    )(inject(func))
     return Node(func=func, name=func.__name__)
 
 
@@ -237,5 +338,18 @@ __all__ = [
     'BaseFlowContext',
 
     # 核心类：节点和链接
-    'Node'
+    'Node',
+    
+    # 并行执行结果模型
+    'ParallelResult',
+    
+    # 并行组合函数
+    'parallel_fan_out',
+    'parallel_fan_in',
+    'parallel_fan_out_in',
+    
+    # 其他组合函数
+    'sequential_composition',
+    'conditional_composition',
+    'repeat_composition'
 ]
