@@ -8,6 +8,10 @@ from dataclasses import dataclass
 from typing import Dict, List, Tuple, Optional
 from pydantic import BaseModel, Field, validator
 from dependency_injector.wiring import Provide
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import threading
+import time
+import random
 from src.aetherflow import Node, BaseFlowContext, node
 
 
@@ -818,7 +822,7 @@ def test_complex_pydantic_model_chains():
                 industry = p.person.company.industry
                 company_industries[industry] = company_industries.get(industry, 0) + 1
                 
-        analytics = dict(
+        analytics = AnalyticsModel(
             total_people=total_people,
             average_age=average_age,
             top_cities=top_cities,
@@ -890,6 +894,277 @@ def test_complex_pydantic_model_chains():
     print("✅ 复杂Pydantic模型链式传递测试通过")
 
 
+def test_multithreading_state_isolation():
+    """测试多线程环境下Node的state和context隔离性"""
+    print("\n=== 测试多线程State隔离性 ===")
+    
+    # 用于收集线程执行结果的字典
+    thread_results = {}
+    thread_states = {}
+    shared_results = {}
+    
+    def thread_local_state_node(thread_id: int, value: int, 
+                              context: BaseFlowContext = Provide[BaseFlowContext]) -> dict:
+        """测试线程本地state的节点"""
+        state = context.state()
+        shared_data = context.shared_data()
+        
+        # 在state中存储线程特定的数据
+        state['thread_id'] = thread_id
+        state['local_value'] = value
+        state['processing_time'] = time.time()
+        state['operations'] = state.get('operations', []) + [f'op_{thread_id}']
+        
+        # 在shared_data中累积全局数据（所有线程共享）
+        total_processed = shared_data.get('total_processed', 0) + 1
+        shared_data['total_processed'] = total_processed
+        shared_data[f'thread_{thread_id}_value'] = value
+        
+        # 模拟一些处理时间
+        time.sleep(random.uniform(0.001, 0.01))
+        
+        result = {
+            'thread_id': thread_id,
+            'local_state_value': state['local_value'],
+            'total_operations': len(state['operations']),
+            'shared_total': shared_data['total_processed']
+        }
+        
+        print(f"线程 {thread_id}: state={dict(state)}, shared_total={shared_data['total_processed']}")
+        return result
+    
+    def thread_processor_node(data: dict, 
+                            context: BaseFlowContext = Provide[BaseFlowContext]) -> dict:
+        """处理线程数据的第二个节点"""
+        state = context.state()
+        shared_data = context.shared_data()
+        
+        thread_id = data['thread_id']
+        
+        # 验证state中的线程本地数据仍然存在
+        assert state['thread_id'] == thread_id, f"State污染检测：期望thread_id={thread_id}, 实际={state.get('thread_id')}"
+        
+        # 更新线程本地状态
+        state['final_result'] = data['local_state_value'] * 10
+        state['chain_completed'] = True
+        
+        # 更新共享数据
+        if 'completed_threads' not in shared_data:
+            shared_data['completed_threads'] = []
+        shared_data['completed_threads'].append(thread_id)
+        
+        final_result = {
+            'thread_id': thread_id,
+            'final_value': state['final_result'],
+            'state_preserved': state['thread_id'] == thread_id,
+            'total_completed': len(shared_data['completed_threads']),
+            'shared_data_keys': list(shared_data.keys())
+        }
+        
+        print(f"线程 {thread_id} 完成: final_value={state['final_result']}, 完成总数={len(shared_data['completed_threads'])}")
+        return final_result
+    
+    # 创建节点和流水线
+    state_node = Node(thread_local_state_node, name="state_node")
+    processor_node = Node(thread_processor_node, name="processor_node")
+    pipeline = state_node.then(processor_node)
+    
+    # 配置依赖注入容器
+    container = BaseFlowContext()
+    container.wire(modules=[__name__])
+    
+    def run_thread_pipeline(thread_id: int, input_value: int):
+        """在单独线程中运行pipeline"""
+        try:
+            result = pipeline(thread_id, input_value)
+            thread_results[thread_id] = result
+            
+            # 获取线程结束时的state快照
+            state_snapshot = dict(container.state())
+            thread_states[thread_id] = state_snapshot
+            
+        except Exception as e:
+            print(f"线程 {thread_id} 执行失败: {e}")
+            thread_results[thread_id] = {'error': str(e)}
+    
+    # 启动多个线程
+    num_threads = 5
+    test_values = [10, 20, 30, 40, 50]
+    
+    print(f"启动 {num_threads} 个并发线程...")
+    
+    with ThreadPoolExecutor(max_workers=num_threads) as executor:
+        futures = [
+            executor.submit(run_thread_pipeline, i, test_values[i])
+            for i in range(num_threads)
+        ]
+        
+        # 等待所有线程完成
+        for future in as_completed(futures):
+            future.result()  # 获取结果，如果有异常会在这里抛出
+    
+    # 获取最终的shared_data状态
+    final_shared_data = dict(container.shared_data())
+    
+    print(f"\n=== 线程执行结果分析 ===")
+    print(f"最终shared_data: {final_shared_data}")
+    
+    # 验证结果
+    assert len(thread_results) == num_threads, f"期望 {num_threads} 个线程结果，实际得到 {len(thread_results)}"
+    
+    # 验证State隔离性
+    for thread_id in range(num_threads):
+        result = thread_results[thread_id]
+        assert 'error' not in result, f"线程 {thread_id} 执行出错: {result.get('error')}"
+        
+        # 验证线程本地数据正确
+        assert result['thread_id'] == thread_id, f"线程ID不匹配: {result['thread_id']} != {thread_id}"
+        assert result['final_value'] == test_values[thread_id] * 10, f"计算结果错误: {result['final_value']}"
+        assert result['state_preserved'], f"线程 {thread_id} 的state数据被污染"
+        
+        print(f"✅ 线程 {thread_id}: state隔离正常, final_value={result['final_value']}")
+    
+    # 验证Shared_data共享性
+    assert final_shared_data['total_processed'] == num_threads, f"共享计数器错误: {final_shared_data['total_processed']}"
+    assert len(final_shared_data['completed_threads']) == num_threads, f"完成线程数错误"
+    
+    # 验证每个线程的数据都在shared_data中
+    for thread_id in range(num_threads):
+        thread_key = f'thread_{thread_id}_value'
+        assert thread_key in final_shared_data, f"线程 {thread_id} 数据未在shared_data中找到"
+        assert final_shared_data[thread_key] == test_values[thread_id], f"线程 {thread_id} 共享数据值错误"
+    
+    print(f"✅ Shared_data共享性验证通过: total_processed={final_shared_data['total_processed']}")
+    print(f"✅ ThreadLocalSingleton隔离效果验证通过")
+    print("✅ 多线程State隔离性测试通过")
+
+
+def test_concurrent_execution_data_consistency():
+    """测试shared_data在多线程中的共享性（不测试原子操作）"""
+    print("\n=== 测试shared_data多线程共享性 ===")
+    
+    def record_thread_data_node(thread_id: int, 
+                              context: BaseFlowContext = Provide[BaseFlowContext]) -> dict:
+        """将线程数据记录到shared_data"""
+        shared_data = context.shared_data()
+        state = context.state()
+        
+        # 获取当前线程名
+        current_thread = threading.current_thread().name
+        state['thread_name'] = current_thread
+        state['thread_id'] = thread_id
+        
+        # 记录线程信息到shared_data（每个线程用唯一key，无竞态条件）
+        thread_key = f"thread_{thread_id}"
+        shared_data[thread_key] = {
+            'thread_name': current_thread,
+            'thread_id': thread_id,
+            'processed_at': time.time()
+        }
+        
+        # 将线程加入活跃线程列表（这里可能有竞态条件，但不影响测试目的）
+        if 'active_threads' not in shared_data:
+            shared_data['active_threads'] = []
+        shared_data['active_threads'].append(thread_id)
+        
+        return {
+            'thread_name': current_thread,
+            'thread_id': thread_id,
+            'recorded': True
+        }
+    
+    def verify_shared_data_node(data: dict, 
+                              context: BaseFlowContext = Provide[BaseFlowContext]) -> dict:
+        """验证shared_data中的数据可以被其他线程访问"""
+        shared_data = context.shared_data()
+        state = context.state()
+        
+        thread_id = data['thread_id']
+        thread_key = f"thread_{thread_id}"
+        
+        # 验证自己的数据确实存在于shared_data中
+        own_data_exists = thread_key in shared_data
+        
+        # 记录验证结果到线程本地state
+        state['own_data_exists'] = own_data_exists
+        state['shared_data_keys'] = list(shared_data.keys())
+        
+        return {
+            'thread_id': thread_id,
+            'own_data_exists': own_data_exists,
+            'total_shared_keys': len(shared_data.keys())
+        }
+    
+    # 创建测试pipeline
+    record_node = Node(record_thread_data_node, name="record")
+    verify_node = Node(verify_shared_data_node, name="verify")
+    pipeline = record_node.then(verify_node)
+    
+    # 配置容器
+    container = BaseFlowContext()
+    container.wire(modules=[__name__])
+    
+    # 准备测试数据
+    num_threads = 5
+    thread_ids = list(range(num_threads))
+    
+    concurrent_results = {}
+    
+    def run_concurrent_task(thread_id: int):
+        """运行并发任务"""
+        try:
+            result = pipeline(thread_id)
+            concurrent_results[thread_id] = result
+        except Exception as e:
+            concurrent_results[thread_id] = {'error': str(e)}
+    
+    print(f"启动 {num_threads} 个并发任务测试shared_data共享性")
+    
+    # 启动并发任务
+    with ThreadPoolExecutor(max_workers=num_threads) as executor:
+        futures = [
+            executor.submit(run_concurrent_task, thread_id)
+            for thread_id in thread_ids
+        ]
+        
+        for future in as_completed(futures):
+            future.result()
+    
+    # 获取最终状态
+    final_shared_data = dict(container.shared_data())
+    
+    print(f"\n=== 并发执行结果 ===")
+    print(f"shared_data最终包含键: {list(final_shared_data.keys())}")
+    print(f"活跃线程记录: {final_shared_data.get('active_threads', [])}")
+    
+    # 验证shared_data共享性
+    # 1. 每个线程都成功记录了数据
+    for thread_id in thread_ids:
+        thread_key = f"thread_{thread_id}"
+        assert thread_key in final_shared_data, f"线程 {thread_id} 的数据未在shared_data中找到"
+        
+        thread_data = final_shared_data[thread_key]
+        assert thread_data['thread_id'] == thread_id, f"线程 {thread_id} 数据不正确"
+    
+    # 2. 每个任务都成功完成
+    assert len(concurrent_results) == num_threads, f"任务数量不匹配: {len(concurrent_results)} != {num_threads}"
+    
+    # 3. 所有任务都成功执行且验证通过
+    for thread_id in thread_ids:
+        result = concurrent_results[thread_id]
+        assert 'error' not in result, f"线程 {thread_id} 执行出错: {result.get('error')}"
+        assert result['own_data_exists'], f"线程 {thread_id} 无法在shared_data中找到自己的数据"
+    
+    # 4. 验证active_threads列表（虽然可能因竞态条件不完整，但应该至少有数据）
+    active_threads = final_shared_data.get('active_threads', [])
+    assert len(active_threads) > 0, "active_threads列表应该包含至少一些线程ID"
+    
+    print(f"✅ 所有 {num_threads} 个线程都成功将数据写入shared_data")
+    print(f"✅ 每个线程都能访问到shared_data中的数据")
+    print(f"✅ shared_data在多线程环境中正确共享")
+    print("✅ shared_data多线程共享性测试通过")
+
+
 if __name__ == "__main__":
     print("=== Node.then() 方法综合测试 ===")
     
@@ -905,6 +1180,8 @@ if __name__ == "__main__":
         test_chain_type_mismatch_errors()
         test_pydantic_model_passing()
         test_complex_pydantic_model_chains()
+        test_multithreading_state_isolation()
+        test_concurrent_execution_data_consistency()
         print("\n🎉 所有综合then方法测试通过！")
         
     except Exception as e:
