@@ -5,7 +5,7 @@ description = "Default template for PDM package"
 authors = [
     {name = "hujunjie", email = "hushengnian@example.com"},
 ]
-dependencies = ["dependency-injector>=4.48.1"]
+dependencies = ["dependency-injector>=4.48.1", "pydantic>=2.11.7"]
 requires-python = ">=3.10"
 readme = "README.md"
 license = {text = "MIT"}
@@ -17,3 +17,8 @@ build-backend = "pdm.backend"
 
 [tool.pdm]
 distribution = true
+
+[dependency-groups]
+dev = [
+    "pytest>=8.4.1",
+]
