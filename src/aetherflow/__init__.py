@@ -97,6 +97,28 @@ def sequential_composition(left: Node, right: Node) -> Node:
     return Node(run, is_start_node=False)
 
 
+def _generate_unique_result_key(base_name: str, existing_results: dict) -> str:
+    """生成唯一的结果键，避免重复覆盖
+    
+    Args:
+        base_name: 基础键名（通常是节点名称）
+        existing_results: 现有的结果字典
+    
+    Returns:
+        唯一的键名，如果base_name无冲突则返回原名，否则返回带数字后缀的名称
+    """
+    if base_name not in existing_results:
+        return base_name
+    
+    counter = 1
+    unique_key = f"{base_name}[{counter}]"
+    while unique_key in existing_results:
+        counter += 1
+        unique_key = f"{base_name}[{counter}]"
+    
+    return unique_key
+
+
 # 定义并行任务执行函数
 def execute_target_node(node: Node, input_data):
     """Execute a single target node with the provided input."""
@@ -172,12 +194,7 @@ def parallel_fan_out(source: Node, targets: List[Node],
                     parallel_result = future.result()
                     
                     # 生成唯一的结果键
-                    result_key = parallel_result.node_name
-
-                    counter = 1
-                    while result_key in parallel_results:
-                        result_key = f"{parallel_result.node_name}[{counter}]"
-                        counter += 1
+                    result_key = _generate_unique_result_key(parallel_result.node_name, parallel_results)
                     
                     parallel_results[result_key] = parallel_result
                     logger.debug(f"Collected result from '{result_key}': success={parallel_result.success}")
@@ -186,7 +203,9 @@ def parallel_fan_out(source: Node, targets: List[Node],
                     import traceback
                     logger.error(f"Failed to get result from '{node.name}': {e}")
 
-                    parallel_results[node.name] = ParallelResult(
+                    # 生成唯一的结果键以避免异常情况下的键覆盖
+                    error_result_key = _generate_unique_result_key(node.name, parallel_results)
+                    parallel_results[error_result_key] = ParallelResult(
                         node_name=node.name,
                         success=False,
                         error=str(e),
