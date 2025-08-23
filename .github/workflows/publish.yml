@@ -82,11 +82,25 @@ jobs:
         twine upload --repository testpypi dist/*
 
     - name: Upload wheel and sdist to Release
-      if: github.event_name == 'release'
+      if: |
+        (github.event_name == 'release') ||
+        (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/'))
       run: |
+        # 获取标签名称
+        if [ "${{ github.event_name }}" == "release" ]; then
+          TAG_NAME="${{ github.event.release.tag_name }}"
+        else
+          TAG_NAME="${GITHUB_REF#refs/tags/}"
+        fi
+
+        # 检查是否存在对应的Release，如果不存在则创建
+        if ! gh release view "$TAG_NAME" >/dev/null 2>&1; then
+          gh release create "$TAG_NAME" --title "Release $TAG_NAME" --notes "Automated release for $TAG_NAME"
+        fi
+
         # 上传所有构建的文件到Release
         for file in dist/*; do
-          gh release upload ${{ github.event.release.tag_name }} "$file" --clobber
+          gh release upload "$TAG_NAME" "$file" --clobber
         done
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
