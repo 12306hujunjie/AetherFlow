@@ -1,4 +1,4 @@
-name: Tag Release
+name: Tag Build
 
 on:
   push:
@@ -6,10 +6,10 @@ on:
       - 'v*.*.*'
 
 jobs:
-  test-and-release:
+  test-and-build:
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: read
 
     steps:
       - name: Checkout code
@@ -39,32 +39,9 @@ jobs:
         run: |
           pdm build
 
-      - name: Get tag name
-        id: tag
-        run: echo "tag_name=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
-
-      - name: Check if Release exists
-        id: check_release
-        run: |
-          if gh release view ${{ steps.tag.outputs.tag_name }} >/dev/null 2>&1; then
-            echo "exists=true" >> $GITHUB_OUTPUT
-          else
-            echo "exists=false" >> $GITHUB_OUTPUT
-          fi
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Create Release if not exists
-        if: steps.check_release.outputs.exists == 'false'
-        run: |
-          gh release create ${{ steps.tag.outputs.tag_name }} \
-            --title "Release ${{ steps.tag.outputs.tag_name }}" \
-            --notes "Automated release for ${{ steps.tag.outputs.tag_name }}"
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Upload wheel and sdist to Release
-        run: |
-          gh release upload ${{ steps.tag.outputs.tag_name }} dist/*
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-package-distributions
+          path: dist/
+          retention-days: 30
