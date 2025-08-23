@@ -222,17 +222,6 @@ def retry_decorator(
                 last_exception=last_exception,
             )
 
-        # 保留原函数的元数据
-        wrapper.__name__ = _get_func_name(func, "wrapped_function")
-        wrapper.__doc__ = func.__doc__
-        wrapper.__annotations__ = getattr(func, "__annotations__", {})
-        wrapper._original_func = func
-
-        # 为了支持pickle序列化，添加必要的属性
-        wrapper.__module__ = getattr(func, "__module__", None)
-        wrapper.__qualname__ = getattr(func, "__qualname__", wrapper.__name__)
-        wrapper._retry_config = config
-
         return wrapper
 
     return decorator
