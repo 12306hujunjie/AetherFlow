@@ -4,7 +4,7 @@ import time
 from collections.abc import Callable
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from dependency_injector import containers, providers
 from dependency_injector.wiring import Provide, inject
