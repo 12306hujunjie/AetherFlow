@@ -10,7 +10,6 @@ from .parallel_utils import *
 
 __all__ = [
     # 节点工厂
-    "StandardNodeFactory",
     "create_test_node",
     "create_simple_processor",
     "create_failing_processor",

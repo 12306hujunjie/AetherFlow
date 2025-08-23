@@ -130,14 +130,15 @@ def test_node_decorator_error_handling():
     """测试@node装饰器的错误处理"""
     print("\n=== 测试@node装饰器错误处理 ===")
 
-    @node
+    # 禁用重试以测试原始异常处理
+    @node(enable_retry=False)
     def safe_divide(data: dict) -> dict:
         if data["denominator"] == 0:
             raise ValueError("Division by zero")
         result = data["numerator"] / data["denominator"]
         return {"result": result}
 
-    @node
+    @node(enable_retry=False)
     def format_result(data: dict) -> str:
         return f"结果: {data['result']:.2f}"
 

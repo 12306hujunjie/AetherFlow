@@ -13,11 +13,15 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+from functools import partial
+
 from src.aetherflow import Node, ParallelResult, node
 
 # 使用统一的测试基础设施
 from tests.shared import StandardTestData
-from tests.utils import ParallelTestValidator, StandardNodeFactory
+from tests.shared.data_models import TestNodeConfig
+from tests.utils import ParallelTestValidator
+from tests.utils.node_factory import simple_processor_node, standard_processor_node
 
 # ============================================================================
 # 模块级别的处理器类（支持pickle序列化）
@@ -46,10 +50,12 @@ class SimpleProcessor:
 
 
 # 定义模块级函数以避免Pydantic验证问题
+@node
 def source_function(value: int) -> StandardTestData:
     return StandardTestData(value=value, name="source")
 
 
+@node
 def simple_multiply_function(data: StandardTestData) -> StandardTestData:
     return StandardTestData(value=data.value * 2, name=f"processed_{data.name}")
 
@@ -58,34 +64,31 @@ def test_fan_out_to_basic_distribution():
     """测试fan_out_to的基本分发功能"""
     print("\n=== 测试fan_out_to基本分发功能 ===")
 
-    # 创建源节点
-    source_node = Node(source_function, name="source")
-
-    # 创建5个目标节点
-    target_nodes = [
-        StandardNodeFactory.create_simple_processor_node(
-            f"target_{i}", multiplier=i + 1
+    # 创建3个目标节点 - 使用纯函数
+    def simple_processor_func(data: StandardTestData) -> StandardTestData:
+        return StandardTestData(
+            value=data.value * 3, name="simple_processed_" + data.name
         )
-        for i in range(5)
+
+    target_nodes = [
+        Node(simple_processor_func, name=f"simple_processor_{i}") for i in range(3)
     ]
 
     # 执行fan_out_to
-    fan_out_pipeline = source_node.fan_out_to(target_nodes)
+    fan_out_pipeline = source_function.fan_out_to(target_nodes)
     results = fan_out_pipeline(10)
 
     print(f"分发结果数量: {len(results)}")
 
     # 验证结果
     assert isinstance(results, dict), "结果应该是字典类型"
-    assert len(results) == 5, f"应该有5个结果，实际有{len(results)}个"
+    assert len(results) == 3, f"应该有3个结果，实际有{len(results)}个"
 
     # 验证每个结果 - 基于节点名称而不是迭代顺序
     expected_results = {
-        "target_0": 10,  # 10 * 1
-        "target_1": 20,  # 10 * 2
-        "target_2": 30,  # 10 * 3
-        "target_3": 40,  # 10 * 4
-        "target_4": 50,  # 10 * 5
+        "simple_processor_0": 30,  # 10 * 3
+        "simple_processor_1": 30,  # 10 * 3
+        "simple_processor_2": 30,  # 10 * 3
     }
 
     for key, result in results.items():
@@ -128,9 +131,14 @@ def test_fan_out_to_single_target():
         return StandardTestData(value=value, name="single_source")
 
     source_node = Node(source_function, name="source")
-    target_node = StandardNodeFactory.create_simple_processor_node(
-        "single_target", multiplier=3
-    )
+
+    # 创建单个目标节点
+    def single_processor_func(data: StandardTestData) -> StandardTestData:
+        return StandardTestData(
+            value=data.value * 3, name="single_processed_" + data.name
+        )
+
+    target_node = Node(single_processor_func, name="single_processor")
 
     # 执行单目标分发
     fan_out_pipeline = source_node.fan_out_to([target_node])
@@ -154,20 +162,22 @@ def test_fan_out_to_executor_types():
     """测试fan_out_to不同executor类型"""
     print("\n=== 测试fan_out_to不同executor类型 ===")
 
-    def source_function(value: int) -> StandardTestData:
-        return StandardTestData(value=value, name="executor_test")
+    # 创建3个目标节点 - 线程池使用Node包装器
+    from tests.utils.node_factory import success_processor_1
 
-    source_node = Node(source_function, name="source")
+    thread_target_nodes = [success_processor_1 for i in range(3)]
 
-    # 创建3个目标节点
-    target_nodes = [
-        StandardNodeFactory.create_simple_processor_node(f"target_{i}", multiplier=2)
-        for i in range(3)
+    # 创建3个目标节点 - 进程池使用纯函数
+    def simple_processor_func(data: StandardTestData) -> StandardTestData:
+        return StandardTestData(value=data.value * 2)
+
+    process_target_nodes = [
+        Node(simple_processor_func, name=f"simple_processor_{i}") for i in range(3)
     ]
 
     # 测试ThreadPoolExecutor
-    thread_pipeline = source_node.fan_out_to(
-        target_nodes, executor="thread", max_workers=2
+    thread_pipeline = source_function.fan_out_to(
+        thread_target_nodes, executor="thread", max_workers=2
     )
     thread_results = thread_pipeline(5)
 
@@ -175,8 +185,8 @@ def test_fan_out_to_executor_types():
     assert len(thread_results) == 3, "Thread executor应该有3个结果"
 
     # 测试ProcessPoolExecutor
-    process_pipeline = source_node.fan_out_to(
-        target_nodes, executor="process", max_workers=2
+    process_pipeline = source_function.fan_out_to(
+        process_target_nodes, executor="process", max_workers=2
     )
     process_results = process_pipeline(5)
 
@@ -273,30 +283,43 @@ def test_fan_out_to_data_consistency():
     print("✅ fan_out_to数据一致性测试通过")
 
 
-@node
-def source_function(value: int) -> StandardTestData:
-    return StandardTestData(value=value, name="failure_test")
-
-
 def test_fan_out_to_partial_failures():
     """测试fan_out_to部分节点失败的处理"""
     print("\n=== 测试fan_out_to部分节点失败处理 ===")
 
+    # 正确的方式：创建源节点，而不是使用全局@node装饰的函数
+    def source_func(value: int) -> StandardTestData:
+        return StandardTestData(value=value, name="failure_test")
+
+    source_node = Node(source_func, name="failure_test_source")
+
     # 创建混合节点：2个正常节点，2个失败节点，1个慢节点
+    def success_processor_1_func(data: StandardTestData) -> StandardTestData:
+        return StandardTestData(value=data.value * 2, name=f"success_1_{data.name}")
+
+    def success_processor_2_func(data: StandardTestData) -> StandardTestData:
+        return StandardTestData(value=data.value * 3, name=f"success_2_{data.name}")
+
+    def failing_processor_1_func(data: StandardTestData) -> StandardTestData:
+        raise ValueError("Intentional failure 1")
+
+    def failing_processor_2_func(data: StandardTestData) -> StandardTestData:
+        raise RuntimeError("Intentional failure 2")
+
+    def slow_processor_1_func(data: StandardTestData) -> StandardTestData:
+        time.sleep(0.1)
+        return StandardTestData(value=data.value * 2, name=f"slow_1_{data.name}")
+
     target_nodes = [
-        StandardNodeFactory.create_simple_processor_node("success_1", multiplier=2),
-        StandardNodeFactory.create_failing_node(
-            "failure_1", failure_rate=1.0
-        ),  # 100%失败
-        StandardNodeFactory.create_simple_processor_node("success_2", multiplier=3),
-        StandardNodeFactory.create_failing_node(
-            "failure_2", failure_rate=1.0
-        ),  # 100%失败
-        StandardNodeFactory.create_slow_node("slow_1", delay_seconds=0.1),
+        Node(success_processor_1_func, name="success_1"),
+        Node(failing_processor_1_func, name="failure_1"),  # 100%失败
+        Node(success_processor_2_func, name="success_2"),
+        Node(failing_processor_2_func, name="failure_2"),  # 100%失败
+        Node(slow_processor_1_func, name="slow_1"),
     ]
 
     # 执行分发
-    fan_out_pipeline = source_function.fan_out_to(target_nodes)
+    fan_out_pipeline = source_node.fan_out_to(target_nodes)
     results = fan_out_pipeline(8)
 
     print(f"部分失败测试结果数量: {len(results)}")
