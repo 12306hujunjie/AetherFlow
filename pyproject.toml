@@ -1,7 +1,7 @@
 [project]
-name = "AetherFlow"
+name = "aetherflow"
 version = "0.1.0"
-description = "Default template for PDM package"
+description = "A powerful Python framework for building declarative, concurrent data processing workflows"
 authors = [
     {name = "12306hujunjie", email = "545512690@qq.com"},
 ]
@@ -9,6 +9,24 @@ dependencies = ["dependency-injector>=4.48.1", "pydantic>=2.11.7"]
 requires-python = ">=3.10"
 readme = "README.md"
 license = {file = "LICENSE"}
+keywords = ["workflow", "data-processing", "concurrent", "declarative", "pipeline"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: System :: Distributed Computing",
+]
+
+[project.urls]
+Homepage = "https://github.com/12306hujunjie/AetherFlow"
+Repository = "https://github.com/12306hujunjie/AetherFlow"
+Documentation = "https://github.com/12306hujunjie/AetherFlow/blob/main/docs/AetherFlow技术文档.md"
+"Bug Tracker" = "https://github.com/12306hujunjie/AetherFlow/issues"
 
 [build-system]
 requires = ["pdm-backend"]
