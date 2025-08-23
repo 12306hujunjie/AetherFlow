@@ -81,6 +81,16 @@ jobs:
       run: |
         twine upload --repository testpypi dist/*
 
+    - name: Upload wheel and sdist to Release
+      if: github.event_name == 'release'
+      run: |
+        # 上传所有构建的文件到Release
+        for file in dist/*; do
+          gh release upload ${{ github.event.release.tag_name }} "$file" --clobber
+        done
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
     - name: Publish to PyPI
       if: |
         (github.event_name == 'release') ||
