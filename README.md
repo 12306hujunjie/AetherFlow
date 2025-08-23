@@ -1,8 +1,10 @@
 # AetherFlow - 智能流式接口框架
 
-[![Python](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
+[![Python](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+[![CI](https://github.com/12306hujunjie/AetherFlow/actions/workflows/test.yml/badge.svg)](https://github.com/12306hujunjie/AetherFlow/actions/workflows/test.yml)
 [![Tests](https://img.shields.io/badge/tests-passing-brightgreen.svg)](#测试)
+[![Coverage](https://img.shields.io/badge/coverage-90%25+-brightgreen.svg)](#测试覆盖率)
 
 一个现代化的 Python 数据流处理框架，专为构建可扩展、线程安全的数据处理管道而设计。支持双并发模式、智能依赖注入和企业级性能优化。
 
