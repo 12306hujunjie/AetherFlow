@@ -301,67 +301,58 @@ def parallel_fan_out_in(
     return parallel_fan_in(fan_out_node, aggregator)
 
 
-def conditional_composition(condition_node: Node, branches: dict[bool, Node]) -> Node:
+def conditional_composition(condition_node: Node, branches: dict[Any, Node]) -> Node:
     """Conditional branching based on boolean output."""
 
     @inject
-    def _execute(state: dict, context: BaseFlowContext = Provide[BaseFlowContext]):
+    def run(*args, **kwargs):
         branch_names = {k: v.name for k, v in branches.items()}
         composition_name = f"({condition_node.name} ? {branch_names})"
-        print(f"--- Executing Conditional Branch: {composition_name} ---")
+        logger.info(f"--- Executing Conditional Branch: {composition_name} ---")
 
         # Execute condition node
-        result = condition_node.run(state, context)
-
-        # Get boolean result - either from the direct return value or from state
-        condition_result = None
-        if isinstance(result, bool):
-            condition_result = result
-        elif isinstance(condition_node, Node):
-            # For simple nodes, check if they returned a boolean directly or stored it in state
-            condition_result = state.get(condition_node.name)
-
-        if not isinstance(condition_result, bool):
-            raise ValueError(
-                f"Condition node '{condition_node.name}' must return a boolean value, got {type(condition_result)}"
-            )
+        condition_result = condition_node(*args, **kwargs)
 
         # Execute the appropriate branch
         if condition_result in branches:
             selected_branch = branches[condition_result]
-            print(
-                f"  - Condition is {condition_result}, executing branch: {selected_branch.name}"
+            logger.info(
+                f"Condition is {condition_result}, executing branch: {selected_branch.name}"
             )
-            return selected_branch.run(state, context)
+            return selected_branch()
         else:
-            print(f"  - No branch defined for condition result: {condition_result}")
-            return None
+            msg = f"No branch defined for condition result: {condition_result}"
+            logger.error(msg)
+            raise ValueError(msg)
 
     # Create a new Node with the conditional execution
     branch_names = {k: v.name for k, v in branches.items()}
-    return Node(func=_execute, name=f"({condition_node.name} ? {branch_names})")
+    return Node(func=run, name=f"({condition_node.name} ? {branch_names})")
 
 
 def repeat_composition(node: Node, times: int) -> Node:
     """Repeat a node for a fixed number of times with early exit support."""
 
     @inject
-    def _execute(state: dict, context: BaseFlowContext = Provide[BaseFlowContext]):
+    def run(*args, **kwargs):
         composition_name = f"({node.name} * {times})"
-        print(f"--- Executing Repeat Composition: {composition_name} ---")
-
+        logger.info(f"--- Executing Repeat Composition: {composition_name} ---")
+        if times <= 0:
+            raise ValueError("Repeat times must be greater than 0")
         last_result = None
-        for i in range(times):
-            print(f"  - Iteration {i + 1}/{times}")
-            result = node.run(state, context)
 
-            # Store the last valid result (not a control signal)
+        for i in range(times):
+            logger.info(f"  - Iteration {i + 1}/{times}")
+            if i == 0:
+                result = node(*args, **kwargs)
+            else:
+                result = node(last_result)
+
             last_result = result
 
-        # Return the last valid result or None if no valid results were produced
         return last_result
 
-    return Node(func=_execute, name=f"({node.name} * {times})")
+    return Node(func=run, name=f"({node.name} * {times})")
 
 
 def node(func: Callable) -> Node:
@@ -373,10 +364,7 @@ def node(func: Callable) -> Node:
     使用方式：
     ```python
     @node
-    def my_processing_function(data: dict, context: BaseFlowContext = Provide[BaseFlowContext]) -> dict:
-        state = context.state()  # 获取线程本地状态
-        shared = context.shared_data()  # 获取共享数据
-
+    def my_processing_function(data: dict, state: dict = Provide[BaseFlowContext.state]) -> dict:
         # 你的处理逻辑...
         result = process_data(data)
 
@@ -386,8 +374,8 @@ def node(func: Callable) -> Node:
         return result
 
     # 使用then链式调用
-    pipeline = my_node1.then(my_node2).then(my_node3)
-    result = pipeline(input_data)
+    flow = my_node1.then(my_node2).then(my_node3)
+    result = flow(input_data)
     ```
 
     注意事项：
