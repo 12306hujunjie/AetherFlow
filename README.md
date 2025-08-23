@@ -46,8 +46,8 @@ def filter_data(load_data, min_length=3):
     data = load_data['data']
     filtered = [item for item in data if len(item) >= min_length]
     return {
-        'filtered_data': filtered, 
-        'original_count': load_data['count'], 
+        'filtered_data': filtered,
+        'original_count': load_data['count'],
         'filtered_count': len(filtered)
     }
 
@@ -56,7 +56,7 @@ def save_results(filter_data, output_file):
     """保存结果"""
     with open(output_file, 'w') as f:
         f.write('\n'.join(filter_data['filtered_data']))
-    
+
     return {
         'saved_file': output_file,
         'processed_items': filter_data['filtered_count'],
@@ -107,7 +107,7 @@ class SharedStateService:
     def __init__(self):
         self.counter = 0
         self.lock = threading.Lock()
-    
+
     def increment(self):
         with self.lock:
             self.counter += 1
@@ -185,7 +185,7 @@ with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
     for i in range(100):
         future = executor.submit(cpu_intensive_task.run, {'data': i})
         futures.append(future)
-    
+
     results = [f.result() for f in concurrent.futures.as_completed(futures)]
     print(f"处理了 {len(results)} 个任务")
 ```
@@ -241,7 +241,7 @@ realtime_pipeline = (receive_events
 ### 🚀 入门级 (0-1 小时)
 - **[快速入门指南](docs/getting_started.md)** - 20分钟上手基本功能
 
-### 🏗️ 进阶级 (1-4 小时)  
+### 🏗️ 进阶级 (1-4 小时)
 - **[架构决策指南](docs/architecture_guide.md)** - 双并发模式深度解析
 - **[并发安全使用指南](docs/concurrent_guide.md)** - 线程安全最佳实践
 - **[最佳实践指南](docs/best_practices.md)** - 代码设计和优化策略
@@ -259,7 +259,7 @@ realtime_pipeline = (receive_events
 # 基础功能测试
 .venv/bin/python tests/test_concurrent_safety.py
 
-# 复杂服务类测试  
+# 复杂服务类测试
 .venv/bin/python tests/test_service_class_safety.py
 
 # 性能基准测试
@@ -305,7 +305,7 @@ AetherFlow/
 ## 📈 路线图
 
 - [x] ✅ 线程安全依赖注入系统
-- [x] ✅ 双并发模式支持  
+- [x] ✅ 双并发模式支持
 - [x] ✅ 性能基准测试体系
 - [x] ✅ 完整文档体系
 - [ ] 🔄 异步/await 支持
@@ -316,7 +316,7 @@ AetherFlow/
 ## 🤝 获取帮助
 
 - **文档**: 查看 [docs/](docs/) 目录
-- **示例**: 查看 [examples/](examples/) 目录  
+- **示例**: 查看 [examples/](examples/) 目录
 - **测试**: 查看 [tests/](tests/) 目录
 - **问题**: 提交 GitHub Issues
 

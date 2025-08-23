@@ -7,6 +7,7 @@ pytest全局配置文件
 import pytest
 
 from src.aetherflow import BaseFlowContext
+
 from .fixtures.injection_helpers import TestConfig
 
 
@@ -26,10 +27,13 @@ def injection_container(test_config) -> BaseFlowContext:
     container = BaseFlowContext()
     return container
 
+
 @pytest.fixture(scope="function")
 def wired_container(injection_container):
     """预配置依赖注入的容器工厂"""
+
     def _wire_container(module):
         injection_container.wire(modules=[module])
         return injection_container
+
     return _wire_container

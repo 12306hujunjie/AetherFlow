@@ -5,7 +5,4 @@
 
 from .injection_helpers import BaseTestContainer, setup_test_container
 
-__all__ = [
-    'BaseTestContainer',
-    'setup_test_container'
-]
+__all__ = ["BaseTestContainer", "setup_test_container"]

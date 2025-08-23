@@ -4,8 +4,6 @@
 集中管理测试中使用的常量、配置和模板数据。
 """
 
-from typing import Dict, List, Any
-
 
 # 断言消息模板 - 唯一被使用的常量组
 
@@ -22,5 +20,5 @@ ASSERTION_MESSAGES = {
 
 # 导出列表
 __all__ = [
-    'ASSERTION_MESSAGES',
+    "ASSERTION_MESSAGES",
 ]

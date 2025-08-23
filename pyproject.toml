@@ -24,4 +24,66 @@ dev = [
     "pytest-cov>=6.0.0",
     "pytest-html>=4.1.1",
     "flake8>=7.1.1",
+    "pre-commit>=4.0.1",
+    "ruff>=0.12.9",
+    "mypy>=1.13.0",
+    "bandit>=1.7.10",
 ]
+
+# Ruff configuration
+[tool.ruff]
+line-length = 88
+target-version = "py310"
+
+[tool.ruff.lint]
+select = [
+    "E",  # pycodestyle errors
+    "W",  # pycodestyle warnings
+    "F",  # pyflakes
+    "I",  # isort
+    "B",  # flake8-bugbear
+    "C4", # flake8-comprehensions
+    "UP", # pyupgrade
+]
+ignore = [
+    "E501",  # line too long, handled by black
+    "B008",  # do not perform function calls in argument defaults
+    "C901",  # too complex
+    "B007",  # loop control variable not used within loop body
+    "UP038", # use X | Y in isinstance call instead of (X, Y)
+    "F405",  # may be undefined, or defined from star imports
+    "F403",  # star imports used; unable to detect undefined names
+    "E712",  # avoid equality comparisons to True/False
+    "F841",  # local variable assigned but never used
+    "B011",  # do not assert False
+    "F401",  # imported but unused
+    "F811",  # redefinition of unused variable
+    "UP035", # typing.Dict/List is deprecated, use dict/list instead
+]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "auto"
+
+# MyPy configuration
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+disallow_untyped_decorators = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_no_return = true
+warn_unreachable = true
+strict_equality = true
+show_error_codes = true
+
+# Bandit configuration
+[tool.bandit]
+skips = ["B101"]  # Skip assert_used test
+exclude_dirs = ["tests"]
