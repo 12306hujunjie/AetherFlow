@@ -47,10 +47,8 @@ select = [
 ]
 ignore = [
     "E501",  # line too long, handled by black
-    "B008",  # do not perform function calls in argument defaults
     "C901",  # too complex
     "B007",  # loop control variable not used within loop body
-    "UP038", # use X | Y in isinstance call instead of (X, Y)
     "F405",  # may be undefined, or defined from star imports
     "F403",  # star imports used; unable to detect undefined names
     "E712",  # avoid equality comparisons to True/False

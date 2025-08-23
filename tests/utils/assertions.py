@@ -41,7 +41,7 @@ def assert_execution_time(
 ):
     """断言执行时间在合理范围内"""
     assert execution_time is not None, f"{operation_name}应该有执行时间"
-    assert isinstance(execution_time, (int, float)), (
+    assert isinstance(execution_time, int | float), (
         f"{operation_name}执行时间应该是数值类型，实际为{type(execution_time)}"
     )
     assert min_time <= execution_time <= max_time, (
@@ -192,8 +192,8 @@ def assert_processing_chain_valid(
     # 检查单调性（如果需要）
     if monotonic_increasing and len(chain_history) > 1:
         for i in range(1, len(chain_history)):
-            if isinstance(chain_history[i], (int, float)) and isinstance(
-                chain_history[i - 1], (int, float)
+            if isinstance(chain_history[i], int | float) and isinstance(
+                chain_history[i - 1], int | float
             ):
                 assert chain_history[i] >= chain_history[i - 1], (
                     f"处理链在位置{i}不是单调递增: {chain_history[i - 1]} -> {chain_history[i]}"
