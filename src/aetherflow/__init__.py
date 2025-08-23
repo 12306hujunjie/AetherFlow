@@ -1,14 +1,13 @@
-import functools
 import inspect
 import logging
 import time
 from collections.abc import Callable
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
-from typing import Any, Union
+from typing import Any
 
 from dependency_injector import containers, providers
-from dependency_injector.wiring import Provide, inject
+from dependency_injector.wiring import inject
 from pydantic import ConfigDict, validate_call
 
 logger = logging.getLogger("aetherflow")

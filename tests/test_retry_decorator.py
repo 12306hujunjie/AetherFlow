@@ -5,13 +5,11 @@ test_retry_decorator.py - 测试重试装饰器功能
 """
 
 import time
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
 from src.aetherflow import (
-    AetherFlowException,
-    Node,
     NodeExecutionException,
     NodeRetryExhaustedException,
     RetryConfig,
