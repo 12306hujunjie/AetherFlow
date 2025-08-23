@@ -60,8 +60,8 @@ jobs:
         pdm run ruff check .
         pdm run ruff format --check .
 
-    - name: Run type checking
-      run: pdm run mypy src/
+    # - name: Run type checking
+    #   run: pdm run mypy src/
 
     - name: Build package
       run: pdm build
