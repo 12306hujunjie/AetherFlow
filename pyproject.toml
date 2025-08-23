@@ -3,12 +3,12 @@ name = "AetherFlow"
 version = "0.1.0"
 description = "Default template for PDM package"
 authors = [
-    {name = "hujunjie", email = "hushengnian@example.com"},
+    {name = "12306hujunjie", email = "545512690@qq.com"},
 ]
 dependencies = ["dependency-injector>=4.48.1", "pydantic>=2.11.7"]
 requires-python = ">=3.10"
 readme = "README.md"
-license = {text = "MIT"}
+license = {file = "LICENSE"}
 
 [build-system]
 requires = ["pdm-backend"]
