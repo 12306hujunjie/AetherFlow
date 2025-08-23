@@ -13,7 +13,6 @@ test_key_uniqueness_fix.py - 测试并行结果键重复处理修复的专项测
 import time
 import pytest
 from typing import Dict, List, Any
-from dataclasses import dataclass
 
 import sys
 import os
@@ -21,52 +20,31 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from src.aetherflow import Node, ParallelResult, _generate_unique_result_key
 
+# 使用统一的测试基础设施
+from .shared.data_models import StandardTestData, create_test_data
+from .utils.node_factory import create_simple_processor, create_failing_processor, StandardNodeFactory
+from .utils.parallel_utils import assert_parallel_results, assert_all_results_successful, assert_mixed_results
+
 
 # ============================================================================
 # 测试辅助工具和模拟节点
 # ============================================================================
 
-@dataclass
-class TestData:
-    """测试数据结构"""
-    value: int
-    name: str
-    timestamp: float = None
-    
-    def __post_init__(self):
-        if self.timestamp is None:
-            self.timestamp = time.time()
-
-
 class KeyTestHelper:
-    """键重复测试的辅助工具类"""
+    """键重复测试的辅助工具类 - 使用新的基础设施"""
     
     @staticmethod
     def create_simple_node(name: str, multiplier: int = 2, should_fail: bool = False) -> Node:
         """创建简单的测试节点"""
-        def processor(data: TestData) -> TestData:
-            if should_fail:
-                raise ValueError(f"Node {name} intentionally failed")
-            return TestData(
-                value=data.value * multiplier,
-                name=f"{name}_processed_{data.name}"
-            )
-        return Node(processor, name=name)
+        if should_fail:
+            return create_failing_processor(name, failure_rate=1.0, multiplier=multiplier)
+        else:
+            return create_simple_processor(name, multiplier=multiplier)
     
     @staticmethod
     def create_aggregator_node() -> Node:
         """创建聚合节点"""
-        def aggregator(parallel_results: Dict[str, ParallelResult]) -> Dict[str, Any]:
-            successful_count = sum(1 for r in parallel_results.values() if r.success)
-            failed_count = len(parallel_results) - successful_count
-            
-            return {
-                'total_results': len(parallel_results),
-                'successful_count': successful_count,
-                'failed_count': failed_count,
-                'result_keys': list(parallel_results.keys())
-            }
-        return Node(aggregator, name="key_aggregator")
+        return StandardNodeFactory.create_aggregator_node("key_aggregator")
 
 
 # ============================================================================
@@ -144,8 +122,8 @@ def test_parallel_execution_unique_names():
     print("\n=== 测试并行执行无重复名称 ===")
     
     # 创建源节点
-    def source_func(value: int) -> TestData:
-        return TestData(value=value, name="source")
+    def source_func(value: int) -> StandardTestData:
+        return create_test_data(value, "source")
     
     source_node = Node(source_func, name="source")
     
@@ -182,8 +160,8 @@ def test_parallel_execution_duplicate_names():
     print("\n=== 测试并行执行重复名称键处理 ===")
     
     # 创建源节点
-    def source_func(value: int) -> TestData:
-        return TestData(value=value, name="source")
+    def source_func(value: int) -> StandardTestData:
+        return create_test_data(value, "source")
     
     source_node = Node(source_func, name="source")
     
@@ -228,8 +206,8 @@ def test_parallel_execution_with_failures():
     print("\n=== 测试并行执行异常键处理 ===")
     
     # 创建源节点
-    def source_func(value: int) -> TestData:
-        return TestData(value=value, name="source")
+    def source_func(value: int) -> StandardTestData:
+        return create_test_data(value, "source")
     
     source_node = Node(source_func, name="source")
     
@@ -290,8 +268,8 @@ def test_fan_out_fan_in_key_handling():
     print("\n=== 测试fan_out_fan_in键处理 ===")
     
     # 创建源节点
-    def source_func(value: int) -> TestData:
-        return TestData(value=value, name="source")
+    def source_func(value: int) -> StandardTestData:
+        return create_test_data(value, "source")
     
     source_node = Node(source_func, name="source")
     

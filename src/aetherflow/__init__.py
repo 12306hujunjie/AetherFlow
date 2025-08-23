@@ -340,12 +340,42 @@ def repeat_composition(node: Node, times: int) -> Node:
 
 
 def node(func: Callable) -> Node:
-    """Decorator to create a Node from a function."""
-    func = validate_call(
+    """
+    装饰器：从函数创建Node，支持依赖注入和类型验证。
+    
+    **这是使用依赖注入的标准和唯一推荐方式！**
+    
+    使用方式：
+    ```python
+    @node
+    def my_processing_function(data: dict, context: BaseFlowContext = Provide[BaseFlowContext]) -> dict:
+        state = context.state()  # 获取线程本地状态
+        shared = context.shared_data()  # 获取共享数据
+        
+        # 你的处理逻辑...
+        result = process_data(data)
+        
+        # 存储状态（可选）
+        state['last_result'] = result
+        
+        return result
+    
+    # 使用then链式调用
+    pipeline = my_node1.then(my_node2).then(my_node3)
+    result = pipeline(input_data)
+    ```
+    
+    注意事项：
+    - 如果函数使用了BaseFlowContext依赖注入，必须使用@node装饰器
+    - 手动创建Node(func)不支持依赖注入，仅用于简单函数
+    - 在使用依赖注入前需要配置容器: container.wire(modules=[__name__])
+    """
+    # 尝试应用完整的验证和注入
+    validated_func = validate_call(
         validate_return=True,
         config=ConfigDict(arbitrary_types_allowed=True)
     )(inject(func))
-    return Node(func=func, name=func.__name__)
+    return Node(func=validated_func, name=func.__name__)
 
 
 # Export list - 只暴露用户需要的公共接口
