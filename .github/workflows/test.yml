@@ -106,7 +106,7 @@ jobs:
       with:
         files: reports/junit.xml
         check_name: "Unit Test Results (Python ${{ matrix.python-version }})"
-        comment_mode: create new
+        comment_mode: always
         
   # 汇总作业：确保所有测试都通过
   test-summary:
