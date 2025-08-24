@@ -150,12 +150,13 @@ def test_node_decorator_error_handling():
     print(f"正常计算: {result1}")
     assert result1 == "结果: 5.00"
 
-    # 测试错误情况
+    # 测试错误情况 - 直接抛出ValueError（未经过重试包装）
     try:
         result2 = chain({"numerator": 10, "denominator": 0})
         assert False, "应该抛出除零错误"
     except ValueError as e:
         print(f"✅ 正确捕获错误: {e}")
+        assert "Division by zero" in str(e)
 
     print("✅ @node装饰器错误处理测试通过")
 

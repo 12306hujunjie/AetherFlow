@@ -95,6 +95,7 @@ pdm run bandit -r src/
 - **线程安全**: 使用ThreadLocalSingleton模式进行状态隔离
 - **可序列化**: 所有Node必须支持pickle序列化（用于进程池）
 - **依赖注入**: 使用dependency-injector容器管理状态
+- **组合层次**: composition函数使用Node类，@node装饰器仅用于用户业务节点
 
 ## 测试原则
 

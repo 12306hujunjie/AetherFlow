@@ -13,7 +13,11 @@ from typing import Any
 import pytest
 from dependency_injector.wiring import Provide
 
-from src.aetherflow import BaseFlowContext, NodeExecutionException, node
+from src.aetherflow import (
+    BaseFlowContext,
+    NodeExecutionException,
+    node,
+)
 
 from .shared.test_constants import ASSERTION_MESSAGES
 
@@ -240,14 +244,14 @@ class TestConditionalComposition:
         result_small = branching_flow(5)  # "small"
         assert result_small == "small: 5"
 
-        # 不存在的分支应该抛出异常
+        # 不存在的分支应该抛出ValueError（composition函数直接抛出）
         with pytest.raises(
-            NodeExecutionException, match="节点执行失败，异常类型不支持重试: ValueError"
+            ValueError, match="No branch defined for condition result: negative"
         ):
             branching_flow(-5)  # "negative" 分支不存在
 
         with pytest.raises(
-            NodeExecutionException, match="节点执行失败，异常类型不支持重试: ValueError"
+            ValueError, match="No branch defined for condition result: zero"
         ):
             branching_flow(0)  # "zero" 分支不存在
 
@@ -265,7 +269,7 @@ class TestConditionalComposition:
         # 条件节点失败应该传播异常
         with pytest.raises(
             NodeExecutionException,
-            match="节点执行失败，异常类型不支持重试: NodeExecutionException",
+            match="节点执行失败，异常类型不支持重试: ValueError",
         ):
             failing_flow(10)
 
@@ -285,7 +289,7 @@ class TestConditionalComposition:
         # 偶数 -> True分支 -> parameter_free_error_node失败
         with pytest.raises(
             NodeExecutionException,
-            match="节点执行失败，异常类型不支持重试: NodeExecutionException",
+            match="节点执行失败，异常类型不支持重试: ValueError",
         ):
             branching_flow(4)
 

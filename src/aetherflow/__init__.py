@@ -1,3 +1,4 @@
+import functools
 import inspect
 import logging
 import time
@@ -164,28 +165,18 @@ def _get_func_name(func, fallback_name: str = None) -> str:
 
 
 def retry_decorator(
-    retry_count: int = 3,
-    retry_delay: float = 1.0,
-    exception_types: tuple = (Exception,),
-    backoff_factor: float = 1.0,
-    max_delay: float = 60.0,
+    config: RetryConfig,
     node_name: str = None,
 ):
     """重试装饰器
 
     Args:
-        retry_count: 最大重试次数
-        retry_delay: 基础重试间隔时间（秒）
-        exception_types: 需要捕获并重试的异常类型元组
-        backoff_factor: 退避因子，用于指数退避
-        max_delay: 最大延迟时间
+        config: RetryConfig 配置模型
         node_name: 节点名称，用于异常信息
     """
-    config = RetryConfig(
-        retry_count, retry_delay, exception_types, backoff_factor, max_delay
-    )
 
     def decorator(func):
+        @functools.wraps(func)
         def wrapper(*args, **kwargs):
             last_exception = None
             func_name = node_name or _get_func_name(func)
@@ -263,45 +254,18 @@ class Node:
     def __init__(
         self,
         func: Callable,
-        name: str = None,
+        name: str,
         is_start_node: bool = True,
-        retry_count: int = 3,
-        retry_delay: float = 1.0,
-        exception_types: tuple = (Exception,),
-        backoff_factor: float = 1.0,
-        max_delay: float = 60.0,
         enable_retry: bool = True,
     ):
         # 配置Pydantic支持任意类型（包括dependency injection的类型）
         self.func = func
-        self.name = name or _get_func_name(func, "unnamed_node")
+        self.name = name
         self.is_start_node = is_start_node
         self.enable_retry = enable_retry
 
-        # 重试配置
-        self.retry_config = RetryConfig(
-            retry_count=retry_count,
-            retry_delay=retry_delay,
-            exception_types=exception_types,
-            backoff_factor=backoff_factor,
-            max_delay=max_delay,
-        )
-
-        # 如果启用重试，应用重试装饰器
-        if self.enable_retry:
-            self._wrapped_func = retry_decorator(
-                retry_count=retry_count,
-                retry_delay=retry_delay,
-                exception_types=exception_types,
-                backoff_factor=backoff_factor,
-                max_delay=max_delay,
-                node_name=self.name,
-            )(func)
-        else:
-            self._wrapped_func = func
-
     def __call__(self, *args, **kwargs):
-        return self._wrapped_func(*args, **kwargs)
+        return self.func(*args, **kwargs)
 
     def __getstate__(self):
         """支持pickle序列化"""
@@ -373,61 +337,10 @@ def sequential_composition(left: Node, right: Node) -> Node:
         right_result = right(left_result)
         return right_result
 
-    # 最严格配置优先原则：如果任一子节点禁用重试，组合节点也禁用重试
-    enable_retry = left.enable_retry and right.enable_retry
-
-    # 如果两个节点都启用重试，则合并重试配置（采用最保守策略）
-    if enable_retry:
-        # 重试次数取最小值（最保守）
-        retry_count = min(left.retry_config.retry_count, right.retry_config.retry_count)
-
-        # 重试延迟取最大值（更保守的等待时间）
-        retry_delay = max(left.retry_config.retry_delay, right.retry_config.retry_delay)
-
-        # 退避因子取最大值（更保守的退避策略）
-        backoff_factor = max(
-            left.retry_config.backoff_factor, right.retry_config.backoff_factor
-        )
-
-        # 最大延迟取最小值（更保守的上限）
-        max_delay = min(left.retry_config.max_delay, right.retry_config.max_delay)
-
-        # 异常类型取交集（只有两个节点都能处理的异常类型才重试）
-        exception_types = tuple(
-            set(left.retry_config.exception_types)
-            & set(right.retry_config.exception_types)
-        )
-
-        # 如果没有共同的异常类型，则禁用重试
-        if not exception_types:
-            enable_retry = False
-            retry_count = 0
-            retry_delay = 0
-            backoff_factor = 1.0
-            max_delay = 60.0
-            exception_types = (Exception,)
-    else:
-        # 如果禁用重试，使用默认配置（不会实际使用）
-        retry_count = 0
-        retry_delay = 0
-        backoff_factor = 1.0
-        max_delay = 60.0
-        exception_types = (Exception,)
-
     # 创建描述性名称
     composition_name = f"({left.name} -> {right.name})"
 
-    return Node(
-        func=run,
-        name=composition_name,
-        is_start_node=False,
-        enable_retry=enable_retry,
-        retry_count=retry_count,
-        retry_delay=retry_delay,
-        exception_types=exception_types,
-        backoff_factor=backoff_factor,
-        max_delay=max_delay,
-    )
+    return Node(func=run, name=composition_name, is_start_node=False)
 
 
 def _generate_unique_result_key(base_name: str, existing_results: dict) -> str:
@@ -654,7 +567,6 @@ def conditional_composition(condition_node: Node, branches: dict[Any, Node]) -> 
         func=run,
         name=f"({condition_node.name} ? {branch_names})",
         enable_retry=True,  # 条件分支允许重试（主要针对条件判断失败）
-        exception_types=DEFAULT_RETRY_EXCEPTIONS,  # 只重试临时性异常
     )
 
 
@@ -676,8 +588,11 @@ def repeat_composition(node: Node, times: int, stop_on_error: bool = False) -> N
     if not isinstance(node, Node):
         raise TypeError("node must be a Node instance")
 
+    # 创建组合节点的名称
+    composition_name = f"({node.name} * {times})"
+
+    # 定义执行函数
     def run(*args, **kwargs):
-        composition_name = f"({node.name} * {times})"
         logger.info(f"--- Executing Repeat Composition: {composition_name} ---")
 
         last_result = None
@@ -704,7 +619,7 @@ def repeat_composition(node: Node, times: int, stop_on_error: bool = False) -> N
                 # 检查是否应该立即停止
                 if stop_on_error:
                     logger.error("Stopping immediately due to stop_on_error=True")
-                    # 直接抛出RepeatStopException，不被外层重试机制干扰
+                    # 抛出RepeatStopException，让其被重试机制处理
                     raise RepeatStopException(
                         f"Execution stopped due to error at iteration {i + 1}: {e}"
                     ) from e
@@ -721,12 +636,8 @@ def repeat_composition(node: Node, times: int, stop_on_error: bool = False) -> N
 
         return last_result
 
-    return Node(
-        func=run,
-        name=f"({node.name} * {times})",
-        enable_retry=False,  # 组合逻辑禁用外层重试，避免语义冲突
-        exception_types=DEFAULT_RETRY_EXCEPTIONS,  # 使用分类异常策略
-    )
+    # 使用@node装饰器创建节点，禁用重试避免重复处理
+    return Node(func=run, name=composition_name, enable_retry=False)
 
 
 def node(
@@ -776,12 +687,10 @@ def node(
     result = flow(input_data)
 
     ```
-
-
-
     Args:
 
         func: 要装饰的函数
+        name: 标识节点名称
         retry_count: 最大重试次数（默认3次）
         retry_delay: 基础重试间隔时间（默认1.0秒）
         exception_types: 需要捕获并重试的异常类型元组（默认所有异常）
@@ -794,26 +703,34 @@ def node(
 
     注意事项：
     - 如果函数使用了BaseFlowContext依赖注入，必须使用@node装饰器
-    - 手动创建Node(func)不支持依赖注入，仅用于简单函数
+    - 不支持直接使用Node(func)
     - 在使用依赖注入前需要配置容器: container.wire(modules=[__name__])
     - 重试机制默认启用，可通过enable_retry=False禁用
     - 重试仅对指定的异常类型生效，其他异常会立即抛出
     """
+    config = RetryConfig(
+        retry_count, retry_delay, exception_types, backoff_factor, max_delay
+    )
 
+    @functools.wraps(Node)
     def decorator(f: Callable) -> Node:
-        # 尝试应用完整的验证和注入
-        validated_func = validate_call(
-            validate_return=True, config=ConfigDict(arbitrary_types_allowed=True)
-        )(inject(f))
+        node_name = name or _get_func_name(f, "unnamed_node")
+
+        # 使用functools.reduce应用装饰器链
+        decorators = [
+            inject,
+            validate_call(
+                validate_return=True, config=ConfigDict(arbitrary_types_allowed=True)
+            ),
+        ]
+        if enable_retry:
+            decorators.append(retry_decorator(config=config, node_name=node_name))
+
+        decorated_func = functools.reduce(lambda func, deco: deco(func), decorators, f)
 
         return Node(
-            func=validated_func,
-            name=name or _get_func_name(f, "unnamed_node"),
-            retry_count=retry_count,
-            retry_delay=retry_delay,
-            exception_types=exception_types,
-            backoff_factor=backoff_factor,
-            max_delay=max_delay,
+            func=decorated_func,
+            name=node_name,
             enable_retry=enable_retry,
         )
 
@@ -844,5 +761,4 @@ __all__ = [
     "RepeatStopException",
     # 重试相关
     "RetryConfig",
-    "retry_decorator",
 ]

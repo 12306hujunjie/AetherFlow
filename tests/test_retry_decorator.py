@@ -14,7 +14,6 @@ from src.aetherflow import (
     NodeRetryExhaustedException,
     RetryConfig,
     node,
-    retry_decorator,
 )
 
 
@@ -46,7 +45,7 @@ class TestRetryDecorator:
         """测试第一次尝试就成功的情况"""
         call_count = 0
 
-        @retry_decorator(retry_count=3, retry_delay=0.01)
+        @node(retry_count=3, retry_delay=0.01)
         def success_function(x):
             nonlocal call_count
             call_count += 1
@@ -60,7 +59,7 @@ class TestRetryDecorator:
         """测试重试后成功的情况"""
         call_count = 0
 
-        @retry_decorator(retry_count=3, retry_delay=0.01)
+        @node(retry_count=3, retry_delay=0.01, exception_types=(ValueError,))
         def flaky_function(x):
             nonlocal call_count
             call_count += 1
@@ -76,7 +75,12 @@ class TestRetryDecorator:
         """测试重试次数耗尽的情况"""
         call_count = 0
 
-        @retry_decorator(retry_count=2, retry_delay=0.01, node_name="test_node")
+        @node(
+            retry_count=2,
+            retry_delay=0.01,
+            name="test_node",
+            exception_types=(ValueError,),
+        )
         def always_fail_function(x):
             nonlocal call_count
             call_count += 1
@@ -95,11 +99,11 @@ class TestRetryDecorator:
         """测试不可重试异常类型"""
         call_count = 0
 
-        @retry_decorator(
+        @node(
             retry_count=3,
             retry_delay=0.01,
             exception_types=(ValueError,),  # 只重试ValueError
-            node_name="test_node",
+            name="test_node",
         )
         def mixed_exception_function(x):
             nonlocal call_count
@@ -119,8 +123,12 @@ class TestRetryDecorator:
         """测试指数退避功能"""
         call_times = []
 
-        @retry_decorator(
-            retry_count=2, retry_delay=0.1, backoff_factor=2.0, node_name="backoff_test"
+        @node(
+            retry_count=2,
+            retry_delay=0.1,
+            backoff_factor=2.0,
+            name="backoff_test",
+            exception_types=(ValueError,),
         )
         def backoff_function():
             call_times.append(time.time())
@@ -313,7 +321,12 @@ class TestRetryLogging:
         """测试重试过程的日志记录"""
         call_count = 0
 
-        @retry_decorator(retry_count=2, retry_delay=0.01, node_name="log_test_node")
+        @node(
+            retry_count=2,
+            retry_delay=0.01,
+            name="log_test_node",
+            exception_types=(ValueError,),
+        )
         def logging_func(x):
             nonlocal call_count
             call_count += 1
