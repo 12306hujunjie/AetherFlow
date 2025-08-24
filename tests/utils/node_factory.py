@@ -471,6 +471,24 @@ class SimpleProcessor:
         )
 
 
+# composition测试专用节点（最小新增集合）
+@node
+def simple_error_node(x: int) -> int:
+    """简单错误节点：总是抛出异常"""
+    raise ValueError(f"Simple error with input: {x}")
+
+
+@node
+def intermittent_error_node(x: int) -> int:
+    """间歇性错误节点：当x能被3整除时抛出异常"""
+    if x % 3 == 0:
+        raise ValueError(f"Intermittent error at value: {x}")
+    return x * 2
+
+
+# 条件节点已移动到各自的测试文件中，使用依赖注入模式
+
+
 # 导出列表
 __all__ = [
     # 数学运算节点
@@ -532,4 +550,7 @@ __all__ = [
     "create_failing_node",
     "create_slow_node",
     "SimpleProcessor",
+    # composition测试专用节点（仅repeat测试使用）
+    "simple_error_node",
+    "intermittent_error_node",
 ]

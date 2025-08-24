@@ -27,6 +27,26 @@ class ParallelResult:
 
 # ==================== 异常类型体系 ====================
 
+# 异常分类：区分可重试vs不可重试异常
+TRANSIENT_EXCEPTIONS = (
+    ConnectionError,  # 网络连接问题
+    TimeoutError,  # 超时错误
+    OSError,  # 系统I/O错误
+    MemoryError,  # 内存不足（临时性）
+)
+
+PERMANENT_EXCEPTIONS = (
+    ValueError,  # 参数值错误
+    TypeError,  # 类型错误
+    AttributeError,  # 属性错误
+    KeyError,  # 键错误
+    IndexError,  # 索引错误
+    # 添加AetherFlow框架特定的不可重试异常
+)
+
+# 默认重试异常类型：只重试临时性异常
+DEFAULT_RETRY_EXCEPTIONS = TRANSIENT_EXCEPTIONS
+
 
 class AetherFlowException(Exception):
     """AetherFlow框架基础异常类"""
@@ -630,7 +650,12 @@ def conditional_composition(condition_node: Node, branches: dict[Any, Node]) -> 
 
     # Create a new Node with the conditional execution
     branch_names = {k: v.name for k, v in branches.items()}
-    return Node(func=run, name=f"({condition_node.name} ? {branch_names})")
+    return Node(
+        func=run,
+        name=f"({condition_node.name} ? {branch_names})",
+        enable_retry=True,  # 条件分支允许重试（主要针对条件判断失败）
+        exception_types=DEFAULT_RETRY_EXCEPTIONS,  # 只重试临时性异常
+    )
 
 
 def repeat_composition(node: Node, times: int, stop_on_error: bool = False) -> Node:
@@ -645,13 +670,15 @@ def repeat_composition(node: Node, times: int, stop_on_error: bool = False) -> N
         包装后的重复执行节点
     """
 
+    # 参数前置验证：立即检查参数，fail-fast原则
+    if times <= 0:
+        raise ValueError("Repeat times must be greater than 0")
+    if not isinstance(node, Node):
+        raise TypeError("node must be a Node instance")
+
     def run(*args, **kwargs):
         composition_name = f"({node.name} * {times})"
         logger.info(f"--- Executing Repeat Composition: {composition_name} ---")
-
-        # 参数验证
-        if times <= 0:
-            raise ValueError("Repeat times must be greater than 0")
 
         last_result = None
         errors = []
@@ -674,9 +701,10 @@ def repeat_composition(node: Node, times: int, stop_on_error: bool = False) -> N
                 errors.append(e)
                 logger.error(f"Iteration {i + 1} failed: {e}")
 
-                # 检查是否应该停止
+                # 检查是否应该立即停止
                 if stop_on_error:
-                    logger.error("Stopping due to stop_on_error=True")
+                    logger.error("Stopping immediately due to stop_on_error=True")
+                    # 直接抛出RepeatStopException，不被外层重试机制干扰
                     raise RepeatStopException(
                         f"Execution stopped due to error at iteration {i + 1}: {e}"
                     ) from e
@@ -693,7 +721,12 @@ def repeat_composition(node: Node, times: int, stop_on_error: bool = False) -> N
 
         return last_result
 
-    return Node(func=run, name=f"({node.name} * {times})")
+    return Node(
+        func=run,
+        name=f"({node.name} * {times})",
+        enable_retry=False,  # 组合逻辑禁用外层重试，避免语义冲突
+        exception_types=DEFAULT_RETRY_EXCEPTIONS,  # 使用分类异常策略
+    )
 
 
 def node(
@@ -702,7 +735,7 @@ def node(
     retry_count: int = 3,
     name: str = None,
     retry_delay: float = 1.0,
-    exception_types: tuple = (Exception,),
+    exception_types: tuple = DEFAULT_RETRY_EXCEPTIONS,
     backoff_factor: float = 1.0,
     max_delay: float = 60.0,
     enable_retry: bool = True,

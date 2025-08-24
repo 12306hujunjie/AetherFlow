@@ -154,7 +154,7 @@ class TestNodeIntegration:
             nonlocal call_count
             call_count += 1
             if call_count < 2:
-                raise ValueError("First attempt failed")
+                raise ConnectionError("First attempt failed")
             return x * 2
 
         result = flaky_func(5)
@@ -203,7 +203,7 @@ class TestNodeIntegration:
             nonlocal call_count_1
             call_count_1 += 1
             if call_count_1 < 2:
-                raise ValueError("Node1 first attempt failed")
+                raise ConnectionError("Node1 first attempt failed")
             return x * 2
 
         @node(retry_delay=0.01)
@@ -211,7 +211,7 @@ class TestNodeIntegration:
             nonlocal call_count_2
             call_count_2 += 1
             if call_count_2 < 3:
-                raise ValueError("Node2 attempts failed")
+                raise ConnectionError("Node2 attempts failed")
             return x + 10
 
         chain = flaky_func_1.then(flaky_func_2)
@@ -234,7 +234,7 @@ class TestNodeDecoratorIntegration:
             nonlocal call_count
             call_count += 1
             if call_count < 2:
-                raise ValueError("Decorated function first attempt failed")
+                raise ConnectionError("Decorated function first attempt failed")
             return x * 3
 
         result = flaky_decorated_func(4)
@@ -245,12 +245,16 @@ class TestNodeDecoratorIntegration:
         """测试@node装饰器自定义重试配置"""
         call_count = 0
 
-        @node(retry_count=5, retry_delay=0.01, exception_types=(ValueError, TypeError))
+        @node(
+            retry_count=5,
+            retry_delay=0.01,
+            exception_types=(ConnectionError, TypeError),
+        )
         def custom_retry_func(x: int) -> int:
             nonlocal call_count
             call_count += 1
             if call_count < 4:
-                raise ValueError(f"Custom retry attempt {call_count} failed")
+                raise ConnectionError(f"Custom retry attempt {call_count} failed")
             return x * 4
 
         result = custom_retry_func(3)
@@ -282,15 +286,15 @@ class TestNodeDecoratorIntegration:
             nonlocal call_count_a
             call_count_a += 1
             if call_count_a < 2:
-                raise ValueError("Func A failed")
+                raise ConnectionError("Func A failed")
             return x * 2
 
-        @node(retry_count=4, retry_delay=0.01, exception_types=(ValueError,))
+        @node(retry_count=4, retry_delay=0.01, exception_types=(ConnectionError,))
         def func_b(x: int) -> int:
             nonlocal call_count_b
             call_count_b += 1
             if call_count_b < 3:
-                raise ValueError("Func B failed")
+                raise ConnectionError("Func B failed")
             return x + 5
 
         chain = func_a.then(func_b)
