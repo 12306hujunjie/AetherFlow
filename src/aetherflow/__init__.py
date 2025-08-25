@@ -1,5 +1,4 @@
 import functools
-import inspect
 import logging
 import time
 from collections.abc import Callable
@@ -256,32 +255,14 @@ class Node:
         func: Callable,
         name: str,
         is_start_node: bool = True,
-        enable_retry: bool = True,
     ):
         # 配置Pydantic支持任意类型（包括dependency injection的类型）
         self.func = func
         self.name = name
         self.is_start_node = is_start_node
-        self.enable_retry = enable_retry
 
     def __call__(self, *args, **kwargs):
         return self.func(*args, **kwargs)
-
-    def __getstate__(self):
-        """支持pickle序列化"""
-        state = self.__dict__.copy()
-        # 序列化时保留所有状态，包括装饰函数
-        # retry_decorator已经通过设置__module__和__qualname__支持序列化
-        return state
-
-    def __setstate__(self, state):
-        """支持pickle反序列化"""
-        self.__dict__.update(state)
-        # 反序列化后直接恢复状态，无需重新创建装饰函数
-
-    @property
-    def input_signature(self):
-        return inspect.signature(self.func)
 
     def then(self, next_node: "Node") -> "Node":
         """Chain this node with another node for sequential execution."""
@@ -566,7 +547,6 @@ def conditional_composition(condition_node: Node, branches: dict[Any, Node]) -> 
     return Node(
         func=run,
         name=f"({condition_node.name} ? {branch_names})",
-        enable_retry=True,  # 条件分支允许重试（主要针对条件判断失败）
     )
 
 
@@ -637,7 +617,7 @@ def repeat_composition(node: Node, times: int, stop_on_error: bool = False) -> N
         return last_result
 
     # 使用@node装饰器创建节点，禁用重试避免重复处理
-    return Node(func=run, name=composition_name, enable_retry=False)
+    return Node(func=run, name=composition_name)
 
 
 def node(
@@ -728,11 +708,7 @@ def node(
 
         decorated_func = functools.reduce(lambda func, deco: deco(func), decorators, f)
 
-        return Node(
-            func=decorated_func,
-            name=node_name,
-            enable_retry=enable_retry,
-        )
+        return Node(func=decorated_func, name=node_name)
 
     # 支持两种调用方式：@node 和 @node(...)
     if func is None:
