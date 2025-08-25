@@ -32,7 +32,9 @@ class AetherFlowException(Exception):
 
     retryable = False  # 默认框架异常不重试
 
-    def __init__(self, message: str, node_name: str = None, **kwargs):
+    def __init__(
+        self, message: str, node_name: str | None = None, **kwargs: Any
+    ) -> None:
         self.node_name = node_name
         self.context = kwargs
         super().__init__(message)
@@ -44,8 +46,12 @@ class ValidationInputException(AetherFlowException):
     retryable = False  # 参数验证失败不应该重试
 
     def __init__(
-        self, message: str, validation_error=None, node_name: str = None, **kwargs
-    ):
+        self,
+        message: str,
+        validation_error: Any = None,
+        node_name: str | None = None,
+        **kwargs: Any,
+    ) -> None:
         self.validation_error = validation_error
         super().__init__(message, node_name, **kwargs)
 
@@ -56,8 +62,12 @@ class ValidationOutputException(AetherFlowException):
     retryable = False  # 返回值验证失败不应该重试
 
     def __init__(
-        self, message: str, validation_error=None, node_name: str = None, **kwargs
-    ):
+        self,
+        message: str,
+        validation_error: Any = None,
+        node_name: str | None = None,
+        **kwargs: Any,
+    ) -> None:
         self.validation_error = validation_error
         super().__init__(message, node_name, **kwargs)
 
@@ -68,8 +78,12 @@ class UserBusinessException(AetherFlowException):
     retryable = True  # 默认用户业务异常可重试
 
     def __init__(
-        self, message: str, retryable: bool = None, node_name: str = None, **kwargs
-    ):
+        self,
+        message: str,
+        retryable: bool | None = None,
+        node_name: str | None = None,
+        **kwargs: Any,
+    ) -> None:
         # 允许用户在实例化时覆盖重试策略
         if retryable is not None:
             self.retryable = retryable
@@ -82,10 +96,10 @@ class NodeExecutionException(AetherFlowException):
     def __init__(
         self,
         message: str,
-        node_name: str = None,
-        original_exception: Exception = None,
-        **kwargs,
-    ):
+        node_name: str | None = None,
+        original_exception: Exception | None = None,
+        **kwargs: Any,
+    ) -> None:
         self.original_exception = original_exception
         super().__init__(message, node_name, **kwargs)
 
@@ -96,10 +110,10 @@ class NodeTimeoutException(NodeExecutionException):
     def __init__(
         self,
         message: str,
-        node_name: str = None,
-        timeout_seconds: float = None,
-        **kwargs,
-    ):
+        node_name: str | None = None,
+        timeout_seconds: float | None = None,
+        **kwargs: Any,
+    ) -> None:
         self.timeout_seconds = timeout_seconds
         super().__init__(message, node_name, **kwargs)
 
@@ -110,14 +124,16 @@ class NodeRetryExhaustedException(NodeExecutionException):
     def __init__(
         self,
         message: str,
-        node_name: str = None,
-        retry_count: int = None,
-        last_exception: Exception = None,
-        **kwargs,
-    ):
+        node_name: str | None = None,
+        retry_count: int | None = None,
+        last_exception: Exception | None = None,
+        **kwargs: Any,
+    ) -> None:
         self.retry_count = retry_count
         self.last_exception = last_exception
-        super().__init__(message, node_name, last_exception, **kwargs)
+        super().__init__(
+            message, node_name, original_exception=last_exception, **kwargs
+        )
 
 
 class LoopControlException(AetherFlowException):
@@ -150,7 +166,7 @@ class RetryConfig:
         """判断是否应该重试 - 优先检查retryable属性，否则使用isinstance检查继承关系"""
         # 如果异常有retryable属性，优先使用
         if hasattr(exception, "retryable"):
-            return exception.retryable
+            return bool(exception.retryable)
 
         # 否则使用isinstance检查异常是否属于指定类型（包括继承关系）
         return isinstance(exception, self.exception_types)
@@ -163,9 +179,9 @@ class RetryConfig:
 
 def custom_validate_call(
     validate_return: bool = True,
-    config: ConfigDict = None,
-    node_name: str = None,
-):
+    config: ConfigDict | None = None,
+    node_name: str | None = None,
+) -> Callable[[Callable], Callable]:
     """
     自定义validate_call包装器，使用Pydantic最佳实践区分输入验证和输出验证异常
 
@@ -225,14 +241,14 @@ def custom_validate_call(
     return decorator
 
 
-def _get_func_name(func, fallback_name: str = None) -> str:
+def _get_func_name(func: Any, fallback_name: str | None = None) -> str:
     """安全获取函数名称"""
     if hasattr(func, "__name__"):
-        return func.__name__
+        return str(func.__name__)
     elif hasattr(func, "func") and hasattr(func.func, "__name__"):  # partial对象
-        return func.func.__name__
+        return str(func.func.__name__)
     elif hasattr(func, "name"):  # Node对象
-        return func.name
+        return str(func.name)
     elif fallback_name:
         return fallback_name
     else:
@@ -250,9 +266,9 @@ def retry_decorator(
         node_name: 节点名称，用于异常信息
     """
 
-    def decorator(func):
+    def decorator(func: Callable) -> Callable:
         @functools.wraps(func)
-        def wrapper(*args, **kwargs):
+        def wrapper(*args: Any, **kwargs: Any) -> Any:
             last_exception = None
             func_name = node_name or _get_func_name(func)
 
@@ -322,9 +338,9 @@ class BaseFlowContext(containers.DeclarativeContainer):
 
     # Use ThreadLocalSingleton for thread-local state isolation
     # Each thread gets its own state dictionary
-    state = providers.ThreadLocalSingleton(dict)
-    context = providers.ThreadLocalSingleton(dict)
-    shared_data = providers.Singleton(dict)
+    state: providers.Provider = providers.ThreadLocalSingleton(dict)
+    context: providers.Provider = providers.ThreadLocalSingleton(dict)
+    shared_data: providers.Provider = providers.Singleton(dict)
 
 
 class Node:
@@ -391,7 +407,7 @@ class Node:
 def sequential_composition(left: Node, right: Node) -> Node:
     """Sequential execution that combines two nodes with type safety and intelligent retry configuration inheritance."""
 
-    def run(*args, **kwargs):
+    def run(*args: Any, **kwargs: Any) -> Any:
         # 输入传给左节点
         left_result = left(*args, **kwargs)
         # 左节点输出传给右节点
@@ -427,7 +443,7 @@ def _generate_unique_result_key(base_name: str, existing_results: dict) -> str:
 
 
 # 定义并行任务执行函数
-def execute_target_node(node: Node, input_data):
+def execute_target_node(node: Node, input_data: Any) -> ParallelResult:
     """Execute a single target node with the provided input."""
     import traceback
 
@@ -480,7 +496,7 @@ def parallel_fan_out(
 
     executor_map = {"thread": ThreadPoolExecutor, "process": ProcessPoolExecutor}
 
-    def run(*args, **kwargs):
+    def run(*args: Any, **kwargs: Any) -> dict[str, ParallelResult]:
         target_names = [t.name for t in targets]
         composition_name = f"({source.name} -> [{', '.join(target_names)}])"
         logger.info(f"Executing Parallel Fan-Out: {composition_name}")
@@ -489,7 +505,7 @@ def parallel_fan_out(
         source_result = source(*args, **kwargs)
 
         # 执行并行任务
-        parallel_results = {}
+        parallel_results: dict[str, ParallelResult] = {}
 
         with executor_map[executor](max_workers=max_workers) as executor_instance:
             # 提交所有并行任务
@@ -553,7 +569,7 @@ def parallel_fan_in(fan_out_node: Node, aggregator: Node) -> Node:
         Node that performs fan-in aggregation
     """
 
-    def run(*args, **kwargs):
+    def run(*args: Any, **kwargs: Any) -> Any:
         composition_name = f"({fan_out_node.name} -> {aggregator.name})"
         logger.info(f"Executing Parallel Fan-In: {composition_name}")
 
@@ -602,7 +618,7 @@ def conditional_composition(condition_node: Node, branches: dict[Any, Node]) -> 
     """Conditional branching based on boolean output."""
 
     @inject
-    def run(*args, **kwargs):
+    def run(*args: Any, **kwargs: Any) -> Any:
         branch_names = {k: v.name for k, v in branches.items()}
         composition_name = f"({condition_node.name} ? {branch_names})"
         logger.info(f"--- Executing Conditional Branch: {composition_name} ---")
@@ -652,7 +668,7 @@ def repeat_composition(node: Node, times: int, stop_on_error: bool = False) -> N
     composition_name = f"({node.name} * {times})"
 
     # 定义执行函数
-    def run(*args, **kwargs):
+    def run(*args: Any, **kwargs: Any) -> Any:
         logger.info(f"--- Executing Repeat Composition: {composition_name} ---")
 
         last_result = None
@@ -701,10 +717,10 @@ def repeat_composition(node: Node, times: int, stop_on_error: bool = False) -> N
 
 
 def node(
-    func: Callable = None,
+    func: Callable | None = None,
     *,
     retry_count: int = 3,
-    name: str = None,
+    name: str | None = None,
     retry_delay: float = 1.0,
     exception_types: tuple = (Exception,),
     backoff_factor: float = 1.0,
