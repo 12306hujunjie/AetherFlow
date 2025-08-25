@@ -268,6 +268,10 @@ def retry_decorator(
 
                     return result
 
+                except (KeyboardInterrupt, SystemExit) as e:
+                    # 系统级异常（调试器中断或系统退出），直接重新抛出
+                    logger.debug(f"节点 {func_name} 收到系统级异常: {type(e).__name__}")
+                    raise
                 except Exception as e:
                     last_exception = e
 
