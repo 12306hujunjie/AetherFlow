@@ -1,4 +1,5 @@
 import functools
+import inspect
 import logging
 import time
 from collections.abc import Callable
@@ -8,7 +9,7 @@ from typing import Any
 
 from dependency_injector import containers, providers
 from dependency_injector.wiring import inject
-from pydantic import ConfigDict, validate_call
+from pydantic import ConfigDict, TypeAdapter, ValidationError, validate_call
 
 logger = logging.getLogger("aetherflow")
 
@@ -26,35 +27,53 @@ class ParallelResult:
 
 
 # ==================== 异常类型体系 ====================
-
-# 异常分类：区分可重试vs不可重试异常
-TRANSIENT_EXCEPTIONS = (
-    ConnectionError,  # 网络连接问题
-    TimeoutError,  # 超时错误
-    OSError,  # 系统I/O错误
-    MemoryError,  # 内存不足（临时性）
-)
-
-PERMANENT_EXCEPTIONS = (
-    ValueError,  # 参数值错误
-    TypeError,  # 类型错误
-    AttributeError,  # 属性错误
-    KeyError,  # 键错误
-    IndexError,  # 索引错误
-    # 添加AetherFlow框架特定的不可重试异常
-)
-
-# 默认重试异常类型：只重试临时性异常
-DEFAULT_RETRY_EXCEPTIONS = TRANSIENT_EXCEPTIONS
-
-
 class AetherFlowException(Exception):
     """AetherFlow框架基础异常类"""
+
+    retryable = False  # 默认框架异常不重试
 
     def __init__(self, message: str, node_name: str = None, **kwargs):
         self.node_name = node_name
         self.context = kwargs
         super().__init__(message)
+
+
+class ValidationInputException(AetherFlowException):
+    """参数验证异常 - validate_call前置校验失败"""
+
+    retryable = False  # 参数验证失败不应该重试
+
+    def __init__(
+        self, message: str, validation_error=None, node_name: str = None, **kwargs
+    ):
+        self.validation_error = validation_error
+        super().__init__(message, node_name, **kwargs)
+
+
+class ValidationOutputException(AetherFlowException):
+    """返回值验证异常 - validate_call返回值校验失败"""
+
+    retryable = False  # 返回值验证失败不应该重试
+
+    def __init__(
+        self, message: str, validation_error=None, node_name: str = None, **kwargs
+    ):
+        self.validation_error = validation_error
+        super().__init__(message, node_name, **kwargs)
+
+
+class UserBusinessException(AetherFlowException):
+    """用户业务异常基类 - 用户可自定义重试策略"""
+
+    retryable = True  # 默认用户业务异常可重试
+
+    def __init__(
+        self, message: str, retryable: bool = None, node_name: str = None, **kwargs
+    ):
+        # 允许用户在实例化时覆盖重试策略
+        if retryable is not None:
+            self.retryable = retryable
+        super().__init__(message, node_name, **kwargs)
 
 
 class NodeExecutionException(AetherFlowException):
@@ -101,20 +120,8 @@ class NodeRetryExhaustedException(NodeExecutionException):
         super().__init__(message, node_name, last_exception, **kwargs)
 
 
-class DependencyInjectionException(AetherFlowException):
-    """依赖注入异常"""
-
-    pass
-
-
 class LoopControlException(AetherFlowException):
     """循环控制异常基类"""
-
-    pass
-
-
-class RepeatStopException(LoopControlException):
-    """重复执行停止异常"""
 
     pass
 
@@ -140,13 +147,82 @@ class RetryConfig:
         self.max_delay = max_delay
 
     def should_retry(self, exception: Exception) -> bool:
-        """判断是否应该重试"""
+        """判断是否应该重试 - 优先检查retryable属性，否则使用isinstance检查继承关系"""
+        # 如果异常有retryable属性，优先使用
+        if hasattr(exception, "retryable"):
+            return exception.retryable
+
+        # 否则使用isinstance检查异常是否属于指定类型（包括继承关系）
         return isinstance(exception, self.exception_types)
 
     def get_delay(self, attempt: int) -> float:
         """计算重试延迟时间（支持指数退避）"""
         delay = self.retry_delay * (self.backoff_factor**attempt)
         return min(delay, self.max_delay)
+
+
+def custom_validate_call(
+    validate_return: bool = True,
+    config: ConfigDict = None,
+    node_name: str = None,
+):
+    """
+    自定义validate_call包装器，使用Pydantic最佳实践区分输入验证和输出验证异常
+
+    Args:
+        validate_return: 是否验证返回值
+        config: Pydantic配置
+        node_name: 节点名称用于异常信息
+
+    Returns:
+        装饰器函数
+    """
+
+    def decorator(func: Callable) -> Callable:
+        # 获取函数签名
+        sig = inspect.signature(func)
+
+        # 创建输入验证器 - 只验证参数，不验证返回值
+        input_validator = validate_call(
+            validate_return=False,
+            config=config or ConfigDict(arbitrary_types_allowed=True),
+        )(func)
+
+        # 创建返回值验证器（如果需要且有返回值类型注解）
+        return_type_adapter = None
+        if validate_return and sig.return_annotation != inspect.Signature.empty:
+            return_type_adapter = TypeAdapter(sig.return_annotation)
+
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            try:
+                # 第一步：验证输入参数并执行函数
+                result = input_validator(*args, **kwargs)
+            except ValidationError as e:
+                # 输入参数验证失败
+                raise ValidationInputException(
+                    f"输入参数验证失败: {e}",
+                    validation_error=e,
+                    node_name=node_name or _get_func_name(func),
+                ) from e
+
+            # 第二步：验证返回值（如果需要）
+            if return_type_adapter:
+                try:
+                    return_type_adapter.validate_python(result)
+                except ValidationError as e:
+                    # 返回值验证失败
+                    raise ValidationOutputException(
+                        f"返回值验证失败: {e}",
+                        validation_error=e,
+                        node_name=node_name or _get_func_name(func),
+                    ) from e
+
+            return result
+
+        return wrapper
+
+    return decorator
 
 
 def _get_func_name(func, fallback_name: str = None) -> str:
@@ -600,7 +676,7 @@ def repeat_composition(node: Node, times: int, stop_on_error: bool = False) -> N
                 if stop_on_error:
                     logger.error("Stopping immediately due to stop_on_error=True")
                     # 抛出RepeatStopException，让其被重试机制处理
-                    raise RepeatStopException(
+                    raise LoopControlException(
                         f"Execution stopped due to error at iteration {i + 1}: {e}"
                     ) from e
 
@@ -626,7 +702,7 @@ def node(
     retry_count: int = 3,
     name: str = None,
     retry_delay: float = 1.0,
-    exception_types: tuple = DEFAULT_RETRY_EXCEPTIONS,
+    exception_types: tuple = (Exception,),
     backoff_factor: float = 1.0,
     max_delay: float = 60.0,
     enable_retry: bool = True,
@@ -649,11 +725,21 @@ def node(
         state['last_result'] = result
         return result
 
-    # 自定义重试配置
-    @node(retry_count=5, retry_delay=2.0, exception_types=(ValueError, TypeError))
-    def critical_function(data: dict) -> dict:
-        # 关键处理逻辑...
-        return process_critical_data(data)
+    # 自定义重试配置（指定可重试的异常类型）
+    @node(retry_count=5, retry_delay=2.0, exception_types=(ConnectionError, TimeoutError))
+    def api_call_function(data: dict) -> dict:
+        # API调用逻辑...
+        return call_external_api(data)
+
+    # 用户自定义业务异常（可重试）
+    class MyBusinessError(UserBusinessException):
+        pass
+
+    @node
+    def business_logic_function(data: dict) -> dict:
+        if not data:
+            raise MyBusinessError("数据为空，可以重试", retryable=True)
+        return process_business_data(data)
 
     # 禁用重试
     @node(enable_retry=False)
@@ -673,7 +759,7 @@ def node(
         name: 标识节点名称
         retry_count: 最大重试次数（默认3次）
         retry_delay: 基础重试间隔时间（默认1.0秒）
-        exception_types: 需要捕获并重试的异常类型元组（默认所有异常）
+        exception_types: 需要捕获并重试的异常类型元组（默认空，依赖异常retryable属性）
         backoff_factor: 退避因子，用于指数退避（默认1.0，无退避）
         max_delay: 最大延迟时间（默认60秒）
         enable_retry: 是否启用重试机制（默认True）
@@ -699,8 +785,10 @@ def node(
         # 使用functools.reduce应用装饰器链
         decorators = [
             inject,
-            validate_call(
-                validate_return=True, config=ConfigDict(arbitrary_types_allowed=True)
+            custom_validate_call(
+                validate_return=True,
+                config=ConfigDict(arbitrary_types_allowed=True),
+                node_name=node_name,
             ),
         ]
         if enable_retry:
@@ -723,18 +811,21 @@ def node(
 __all__ = [
     # 装饰器：创建节点
     "node",
+    # 验证装饰器：自定义验证异常处理
+    "custom_validate_call",
     # 上下文：自定义依赖注入
     "BaseFlowContext",
     # 并行执行结果模型
     "ParallelResult",
     # 异常类
     "AetherFlowException",
+    "ValidationInputException",
+    "ValidationOutputException",
+    "UserBusinessException",
     "NodeExecutionException",
     "NodeTimeoutException",
     "NodeRetryExhaustedException",
-    "DependencyInjectionException",
     "LoopControlException",
-    "RepeatStopException",
     # 重试相关
     "RetryConfig",
 ]

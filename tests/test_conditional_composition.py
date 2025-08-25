@@ -25,7 +25,7 @@ from .shared.test_constants import ASSERTION_MESSAGES
 
 
 # 专用于conditional_composition的无参数错误节点
-@node
+@node(exception_types=())
 def parameter_free_error_node(state: dict = Provide[BaseFlowContext.state]) -> int:
     """无参数错误节点：用于分支测试"""
     input_val = state.get("current_input", 0)
@@ -97,7 +97,7 @@ def format_large_node(state: dict = Provide[BaseFlowContext.state]) -> str:
     return f"large: {input_val}"
 
 
-@node
+@node(exception_types=())
 def error_condition_node(x: int, state: dict = Provide[BaseFlowContext.state]) -> str:
     """错误条件节点：总是失败"""
     state["current_input"] = x

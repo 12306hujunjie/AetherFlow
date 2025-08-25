@@ -21,7 +21,7 @@ from typing import Any
 
 import pytest
 
-from src.aetherflow import RepeatStopException, node, repeat_composition
+from src.aetherflow import LoopControlException, node, repeat_composition
 
 # 使用统一的测试基础设施
 from .shared.test_constants import ASSERTION_MESSAGES
@@ -124,7 +124,9 @@ class TestRepeatComposition:
         # 使用总是失败的节点
         repeat_node = repeat_composition(simple_error_node, times=3, stop_on_error=True)
 
-        with pytest.raises(RepeatStopException, match="Execution stopped due to error"):
+        with pytest.raises(
+            LoopControlException, match="Execution stopped due to error"
+        ):
             repeat_node(5)
         print("✅ 总是失败节点正确抛出RepeatStopException")
 
@@ -134,7 +136,9 @@ class TestRepeatComposition:
         )
 
         # 输入3会在第一次迭代就失败(3能被3整除)
-        with pytest.raises(RepeatStopException, match="Execution stopped due to error"):
+        with pytest.raises(
+            LoopControlException, match="Execution stopped due to error"
+        ):
             repeat_intermittent(3)
 
         # 输入2正常执行: 2*2=4, 4*2=8, 8*2=16, 16*2=32, 32*2=64
