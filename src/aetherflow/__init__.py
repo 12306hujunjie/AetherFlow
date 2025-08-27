@@ -185,7 +185,7 @@ def custom_validate_call(
     node_name: str | None = None,
 ) -> Callable[[Callable], Callable]:
     """
-    自定义validate_call包装器，使用Pydantic最佳实践区分输入验证和输出验证异常
+    自定义validate_call包装器，支持异步函数并使用Pydantic最佳实践区分输入验证和输出验证异常
 
     Args:
         validate_return: 是否验证返回值
@@ -200,6 +200,9 @@ def custom_validate_call(
         # 获取函数签名
         sig = inspect.signature(func)
 
+        # 检测原始函数是否为异步函数
+        is_async_func = inspect.iscoroutinefunction(func)
+
         # 创建输入验证器 - 只验证参数，不验证返回值
         input_validator = validate_call(
             validate_return=False,
@@ -211,34 +214,68 @@ def custom_validate_call(
         if validate_return and sig.return_annotation != inspect.Signature.empty:
             return_type_adapter = TypeAdapter(sig.return_annotation)
 
-        @functools.wraps(func)
-        def wrapper(*args, **kwargs):
-            try:
-                # 第一步：验证输入参数并执行函数
-                result = input_validator(*args, **kwargs)
-            except ValidationError as e:
-                # 输入参数验证失败
-                raise ValidationInputException(
-                    f"输入参数验证失败: {e}",
-                    validation_error=e,
-                    node_name=node_name or _get_func_name(func),
-                ) from e
-
-            # 第二步：验证返回值（如果需要）
-            if return_type_adapter:
+        if is_async_func:
+            # 异步函数版本
+            @functools.wraps(func)
+            async def async_wrapper(*args, **kwargs):
                 try:
-                    return_type_adapter.validate_python(result)
+                    # 第一步：验证输入参数并执行函数，获取协程对象
+                    coro = input_validator(*args, **kwargs)
+                    # await 协程对象获取实际结果
+                    result = await coro
                 except ValidationError as e:
-                    # 返回值验证失败
-                    raise ValidationOutputException(
-                        f"返回值验证失败: {e}",
+                    # 输入参数验证失败
+                    raise ValidationInputException(
+                        f"输入参数验证失败: {e}",
                         validation_error=e,
                         node_name=node_name or _get_func_name(func),
                     ) from e
 
-            return result
+                # 第二步：验证返回值（如果需要）
+                if return_type_adapter:
+                    try:
+                        return_type_adapter.validate_python(result)
+                    except ValidationError as e:
+                        # 返回值验证失败
+                        raise ValidationOutputException(
+                            f"返回值验证失败: {e}",
+                            validation_error=e,
+                            node_name=node_name or _get_func_name(func),
+                        ) from e
 
-        return wrapper
+                return result
+
+            return async_wrapper
+        else:
+            # 同步函数版本（保持原有逻辑）
+            @functools.wraps(func)
+            def wrapper(*args, **kwargs):
+                try:
+                    # 第一步：验证输入参数并执行函数
+                    result = input_validator(*args, **kwargs)
+                except ValidationError as e:
+                    # 输入参数验证失败
+                    raise ValidationInputException(
+                        f"输入参数验证失败: {e}",
+                        validation_error=e,
+                        node_name=node_name or _get_func_name(func),
+                    ) from e
+
+                # 第二步：验证返回值（如果需要）
+                if return_type_adapter:
+                    try:
+                        return_type_adapter.validate_python(result)
+                    except ValidationError as e:
+                        # 返回值验证失败
+                        raise ValidationOutputException(
+                            f"返回值验证失败: {e}",
+                            validation_error=e,
+                            node_name=node_name or _get_func_name(func),
+                        ) from e
+
+                return result
+
+            return wrapper
 
     return decorator
 
@@ -342,6 +379,184 @@ _context_context: ContextVar[dict | None] = ContextVar(
 )
 
 
+# ==================== 智能异步检测系统 ====================
+
+
+def _is_async_callable(func: Callable) -> bool:
+    """智能检测函数是否为异步函数，支持多种场景。
+
+    Args:
+        func: 要检测的函数或可调用对象
+
+    Returns:
+        bool: True if the function is async, False otherwise
+    """
+    # 检测直接的协程函数
+    if inspect.iscoroutinefunction(func):
+        return True
+
+    # 检测 Node 对象中包装的协程函数
+    if hasattr(func, "func") and inspect.iscoroutinefunction(func.func):
+        return True
+
+    # 检测 partial 对象包装的协程函数
+    if hasattr(func, "func") and hasattr(func.func, "__wrapped__"):
+        return inspect.iscoroutinefunction(func.func.__wrapped__)
+
+    # 检测装饰器包装的协程函数 - 递归检查多层装饰器
+    current_func = func
+    while hasattr(current_func, "__wrapped__"):
+        current_func = current_func.__wrapped__
+        if inspect.iscoroutinefunction(current_func):
+            return True
+
+    # 检测装饰器链中的原始函数
+    if hasattr(func, "__wrapped__"):
+        return _is_async_callable(func.__wrapped__)
+
+    return False
+
+
+def _analyze_nodes_async_pattern(nodes: list["Node"]) -> dict[str, Any]:
+    """分析节点列表的异步模式，提供执行策略建议。
+
+    Args:
+        nodes: 节点列表
+
+    Returns:
+        dict: 包含异步分析结果和执行建议
+    """
+    if not nodes:
+        return {
+            "async_count": 0,
+            "sync_count": 0,
+            "total_count": 0,
+            "async_ratio": 0.0,
+            "recommended_executor": "thread",
+            "mixed_mode": False,
+            "async_nodes": [],
+            "sync_nodes": [],
+        }
+
+    async_nodes = []
+    sync_nodes = []
+
+    for node in nodes:
+        if _is_async_callable(node.func):
+            async_nodes.append(node.name)
+        else:
+            sync_nodes.append(node.name)
+
+    total_count = len(nodes)
+    async_count = len(async_nodes)
+    sync_count = len(sync_nodes)
+    async_ratio = async_count / total_count if total_count > 0 else 0.0
+
+    # 执行器推荐策略
+    if async_count == 0:
+        recommended_executor = "thread"
+    elif sync_count == 0:
+        recommended_executor = "async"
+    else:
+        # 混合模式：优先推荐async executor，因为它可以同时处理sync和async
+        recommended_executor = "async"
+
+    return {
+        "async_count": async_count,
+        "sync_count": sync_count,
+        "total_count": total_count,
+        "async_ratio": async_ratio,
+        "recommended_executor": recommended_executor,
+        "mixed_mode": async_count > 0 and sync_count > 0,
+        "async_nodes": async_nodes,
+        "sync_nodes": sync_nodes,
+    }
+
+
+def _get_original_func(func: Callable) -> Callable:
+    """递归获取装饰器链中的原始函数。"""
+    current = func
+    while hasattr(current, "__wrapped__"):
+        current = current.__wrapped__
+    return current
+
+
+def _smart_execute_with_fallback(node: "Node", *args, **kwargs):
+    """智能执行节点，自动处理同步/异步调用。
+
+    Args:
+        node: 要执行的节点
+        *args: 位置参数
+        **kwargs: 关键字参数
+
+    Returns:
+        执行结果
+
+    Note:
+        这是一个同步函数，用于在同步上下文中智能调用异步节点
+    """
+    if _is_async_callable(node.func):
+        # 异步节点需要在事件循环中执行
+        try:
+            # 尝试获取当前事件循环
+            try:
+                loop = asyncio.get_running_loop()
+                # 如果有运行中的事件循环，在新线程中运行以避免嵌套事件循环问题
+                logger.debug(
+                    f"Running async node '{node.name}' in sync context with running loop"
+                )
+                import concurrent.futures
+
+                def run_async():
+                    # 创建新事件循环运行异步节点
+                    new_loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(new_loop)
+                    try:
+                        # 通过完整装饰器链调用异步节点
+                        coro = node.func(*args, **kwargs)
+                        return new_loop.run_until_complete(coro)
+                    finally:
+                        new_loop.close()
+
+                with concurrent.futures.ThreadPoolExecutor() as executor:
+                    future = executor.submit(run_async)
+                    return future.result()
+
+            except RuntimeError:
+                # 没有运行中的事件循环，可以直接使用asyncio.run
+                coro = node.func(*args, **kwargs)
+                return asyncio.run(coro)
+
+        except Exception as e:
+            logger.error(f"Failed to execute async node '{node.name}': {e}")
+            raise
+    else:
+        # 同步节点直接调用
+        return node(*args, **kwargs)
+
+
+async def _smart_execute_async_with_fallback(node: "Node", *args, **kwargs):
+    """智能异步执行节点，自动处理同步/异步调用。
+
+    Args:
+        node: 要执行的节点
+        *args: 位置参数
+        **kwargs: 关键字参数
+
+    Returns:
+        执行结果
+
+    Note:
+        这是一个异步函数，用于在异步上下文中调用任何类型的节点
+    """
+    if _is_async_callable(node.func):
+        # 异步节点直接await
+        return await node.func(*args, **kwargs)
+    else:
+        # 同步节点直接调用（在异步上下文中）
+        return node(*args, **kwargs)
+
+
 def _get_context_safe_state():
     """Get context-safe state that works in both thread and coroutine environments."""
     try:
@@ -409,9 +624,9 @@ class Node:
         """Fan out to multiple nodes for parallel execution."""
         # Normalize executor type to lowercase for case-insensitive comparison
         executor_lower = executor.lower()
-        if executor_lower not in ["thread", "async"]:
+        if executor_lower not in ["thread", "async", "auto"]:
             raise ValueError(
-                "Only 'thread' and 'async' executors are supported. ProcessPoolExecutor has been removed to resolve pickle serialization issues."
+                "Only 'thread', 'async', and 'auto' executors are supported. ProcessPoolExecutor has been removed to resolve pickle serialization issues."
             )
         return parallel_fan_out(self, nodes, executor_lower, max_workers)
 
@@ -429,9 +644,9 @@ class Node:
         """Complete fan-out and fan-in operation in one step."""
         # Normalize executor type to lowercase for case-insensitive comparison
         executor_lower = executor.lower()
-        if executor_lower not in ["thread", "async"]:
+        if executor_lower not in ["thread", "async", "auto"]:
             raise ValueError(
-                "Only 'thread' and 'async' executors are supported. ProcessPoolExecutor has been removed to resolve pickle serialization issues."
+                "Only 'thread', 'async', and 'auto' executors are supported. ProcessPoolExecutor has been removed to resolve pickle serialization issues."
             )
         return parallel_fan_out_in(
             self, targets, aggregator, executor_lower, max_workers
@@ -455,18 +670,30 @@ class Node:
 
 
 def sequential_composition(left: Node, right: Node) -> Node:
-    """Sequential execution that combines two nodes with type safety and intelligent retry configuration inheritance."""
+    """Sequential execution that combines two nodes with intelligent async/sync mixing."""
 
     def run(*args: Any, **kwargs: Any) -> Any:
-        # 输入传给左节点
-        left_result = left(*args, **kwargs)
-        # 左节点输出传给右节点
-        right_result = right(left_result)
+        # 智能执行左节点
+        left_result = _smart_execute_with_fallback(left, *args, **kwargs)
+        # 智能执行右节点，传入左节点结果
+        right_result = _smart_execute_with_fallback(right, left_result)
         return right_result
+
+    async def run_async(*args: Any, **kwargs: Any) -> Any:
+        # 智能异步执行左节点
+        left_result = await _smart_execute_async_with_fallback(left, *args, **kwargs)
+        # 智能异步执行右节点，传入左节点结果
+        right_result = await _smart_execute_async_with_fallback(right, left_result)
+        return right_result
+
+    # 分析节点异步模式，选择最优执行函数
+    analysis = _analyze_nodes_async_pattern([left, right])
 
     # 创建描述性名称
     composition_name = f"({left.name} -> {right.name})"
 
+    # 智能选择执行函数：如果有异步节点但在同步上下文调用，使用同步版本（会内部处理异步）
+    # 只有在确定是异步上下文调用时才使用async版本
     return Node(func=run, name=composition_name, is_start_node=False)
 
 
@@ -494,13 +721,14 @@ def _generate_unique_result_key(base_name: str, existing_results: dict) -> str:
 
 # 定义并行任务执行函数
 def execute_target_node(node: Node, input_data: Any) -> ParallelResult:
-    """Execute a single target node with the provided input."""
+    """Execute a single target node with the provided input using intelligent async/sync handling."""
     import traceback
 
     start_time = time.time()
 
     try:
-        result = node(input_data)
+        # 使用智能执行器处理同步和异步节点
+        result = _smart_execute_with_fallback(node, input_data)
         execution_time = time.time() - start_time
 
         return ParallelResult(
@@ -524,7 +752,7 @@ def execute_target_node(node: Node, input_data: Any) -> ParallelResult:
 
 
 async def execute_target_node_async(node: Node, input_data: Any) -> ParallelResult:
-    """Execute a single target node asynchronously with context safety."""
+    """Execute a single target node asynchronously with intelligent async/sync handling."""
     import traceback
 
     start_time = time.time()
@@ -539,11 +767,8 @@ async def execute_target_node_async(node: Node, input_data: Any) -> ParallelResu
         token_context = _context_context.set(current_context)
 
         try:
-            # Check if the node function is async
-            if inspect.iscoroutinefunction(node.func):
-                result = await node.func(input_data)
-            else:
-                result = node(input_data)
+            # 使用智能异步执行器处理任何类型的节点
+            result = await _smart_execute_async_with_fallback(node, input_data)
 
             execution_time = time.time() - start_time
 
@@ -584,7 +809,7 @@ def parallel_fan_out(
     Args:
         source: Source node to execute first
         targets: List of target nodes for parallel execution
-        executor: 'thread' for ThreadPoolExecutor or 'async' for asyncio
+        executor: 'thread', 'async', or 'auto' for automatic selection
         max_workers: Maximum worker threads (ignored for async)
 
     Returns:
@@ -595,11 +820,26 @@ def parallel_fan_out(
 
     # Normalize executor type to lowercase for case-insensitive comparison
     executor = executor.lower()
+
+    # Handle 'auto' executor selection
+    if executor == "auto":
+        # Analyze all nodes (source + targets) for optimal executor choice
+        all_nodes = [source] + targets
+        analysis = _analyze_nodes_async_pattern(all_nodes)
+        recommended_executor = analysis["recommended_executor"]
+        logger.info(
+            f"Auto-selected executor '{recommended_executor}' based on node analysis: "
+            f"{analysis['async_count']} async, {analysis['sync_count']} sync nodes"
+        )
+        # 只有auto模式才强制使用thread，显式指定async时需要保留
+        executor = "thread"
+
     if executor not in ["thread", "async"]:
         raise ValueError(
-            "Only 'thread' and 'async' executors are supported. ProcessPoolExecutor has been removed to resolve pickle serialization issues."
+            "Only 'thread', 'async', and 'auto' executors are supported. ProcessPoolExecutor has been removed to resolve pickle serialization issues."
         )
 
+    # 定义executor映射
     executor_map = {"thread": ThreadPoolExecutor}
 
     async def run_async(*args: Any, **kwargs: Any) -> dict[str, ParallelResult]:
@@ -607,11 +847,10 @@ def parallel_fan_out(
         composition_name = f"({source.name} -> [{', '.join(target_names)}])"
         logger.info(f"Executing Async Parallel Fan-Out: {composition_name}")
 
-        # 执行源节点
-        if inspect.iscoroutinefunction(source.func):
-            source_result = await source.func(*args, **kwargs)
-        else:
-            source_result = source(*args, **kwargs)
+        # 执行源节点（使用智能异步执行器）
+        source_result = await _smart_execute_async_with_fallback(
+            source, *args, **kwargs
+        )
 
         # 设置当前协程的context
         current_state = (_context_state.get() or {}).copy()
@@ -665,8 +904,8 @@ def parallel_fan_out(
         composition_name = f"({source.name} -> [{', '.join(target_names)}])"
         logger.info(f"Executing Thread Parallel Fan-Out: {composition_name}")
 
-        # 执行源节点
-        source_result = source(*args, **kwargs)
+        # 执行源节点（使用智能执行器）
+        source_result = _smart_execute_with_fallback(source, *args, **kwargs)
 
         # 执行并行任务
         parallel_results: dict[str, ParallelResult] = {}
@@ -716,10 +955,11 @@ def parallel_fan_out(
         )
         return parallel_results
 
-    # 创建新的Node - 根据executor类型选择执行函数
+    # 创建新的Node - 默认使用同步版本，内部智能处理异步节点
     target_names = [t.name for t in targets]
     composition_name = f"({source.name} -> [{', '.join(target_names)}])"
 
+    # 根据最终executor类型选择执行函数
     if executor == "async":
         return Node(func=run_async, name=composition_name)
     else:
@@ -728,7 +968,7 @@ def parallel_fan_out(
 
 def parallel_fan_in(fan_out_node: Node, aggregator: Node) -> Node:
     """
-    Simplified parallel fan-in aggregation with direct parameter passing.
+    Simplified parallel fan-in aggregation with intelligent async/sync handling.
 
     Args:
         fan_out_node: The fan-out node to execute first
@@ -742,11 +982,11 @@ def parallel_fan_in(fan_out_node: Node, aggregator: Node) -> Node:
         composition_name = f"({fan_out_node.name} -> {aggregator.name})"
         logger.info(f"Executing Parallel Fan-In: {composition_name}")
 
-        # 执行fan-out节点，获取并行结果
-        parallel_results = fan_out_node(*args, **kwargs)
+        # 执行fan-out节点，获取并行结果（使用智能执行器）
+        parallel_results = _smart_execute_with_fallback(fan_out_node, *args, **kwargs)
 
-        # 将并行结果作为参数传递给聚合器
-        aggregator_result = aggregator(parallel_results)
+        # 将并行结果作为参数传递给聚合器（使用智能执行器）
+        aggregator_result = _smart_execute_with_fallback(aggregator, parallel_results)
 
         logger.info("Fan-in aggregation completed successfully")
         return aggregator_result
@@ -768,7 +1008,7 @@ def parallel_fan_out_in(
         source: Source node to execute first
         targets: List of target nodes for parallel execution
         aggregator: Aggregator node that combines parallel results
-        executor: 'thread' for ThreadPoolExecutor or 'async' for asyncio
+        executor: 'thread', 'async', or 'auto' for automatic selection
         max_workers: Maximum worker threads (ignored for async)
 
     Returns:
@@ -776,9 +1016,23 @@ def parallel_fan_out_in(
     """
     # Normalize executor type to lowercase for case-insensitive comparison
     executor = executor.lower()
+
+    # Handle 'auto' executor selection
+    if executor == "auto":
+        # Analyze all nodes (source + targets + aggregator) for optimal executor choice
+        all_nodes = [source] + targets + [aggregator]
+        analysis = _analyze_nodes_async_pattern(all_nodes)
+        recommended_executor = analysis["recommended_executor"]
+        logger.info(
+            f"Auto-selected executor '{recommended_executor}' for fan-out-in based on node analysis: "
+            f"{analysis['async_count']} async, {analysis['sync_count']} sync nodes"
+        )
+        # 对于智能混合调用系统，统一使用thread executor但内部智能处理异步
+        executor = "thread"
+
     if executor not in ["thread", "async"]:
         raise ValueError(
-            "Only 'thread' and 'async' executors are supported. ProcessPoolExecutor has been removed to resolve pickle serialization issues."
+            "Only 'thread', 'async', and 'auto' executors are supported. ProcessPoolExecutor has been removed to resolve pickle serialization issues."
         )
     # 创建fan-out节点
     fan_out_node = parallel_fan_out(

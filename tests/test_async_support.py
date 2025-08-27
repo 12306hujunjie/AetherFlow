@@ -278,7 +278,8 @@ class TestAsyncExecutorValidation:
 
         # 测试无效的executor类型
         with pytest.raises(
-            ValueError, match=r"Only 'thread' and 'async' executors are supported"
+            ValueError,
+            match=r"Only 'thread', 'async', and 'auto' executors are supported",
         ):
             source.fan_out_to([target], executor="invalid")
 

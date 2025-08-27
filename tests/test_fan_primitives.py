@@ -177,7 +177,7 @@ def test_fan_out_to_executor_types():
     import pytest
 
     with pytest.raises(
-        ValueError, match="Only 'thread' and 'async' executors are supported"
+        ValueError, match="Only 'thread', 'async', and 'auto' executors are supported"
     ):
         source_function.fan_out_to(target_nodes, executor="process", max_workers=2)
 
