@@ -182,3 +182,5 @@ claude-flow.bat
 claude-flow.ps1
 hive-mind-prompt-*.txt
 .claude-flow/
+.bmad-core/
+.trae/

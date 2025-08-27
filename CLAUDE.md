@@ -1,5 +1,5 @@
 # CLAUDE.md
-
+- 使用中文内容
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ## 核心原则
