@@ -1,9 +1,11 @@
+import asyncio
 import functools
 import inspect
 import logging
 import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any
 
@@ -333,14 +335,48 @@ def retry_decorator(
     return decorator
 
 
+# Context variables for asyncio coroutine safety
+_context_state: ContextVar[dict | None] = ContextVar("aetherflow_state", default=None)
+_context_context: ContextVar[dict | None] = ContextVar(
+    "aetherflow_context", default=None
+)
+
+
+def _get_context_safe_state():
+    """Get context-safe state that works in both thread and coroutine environments."""
+    try:
+        # Try to get from ContextVar first (asyncio coroutines)
+        state = _context_state.get()
+        return state if state is not None else {}
+    except LookupError:
+        # Fallback to thread-local if ContextVar not available
+        # This happens in thread-based execution
+        return {}
+
+
+def _get_context_safe_context():
+    """Get context-safe context that works in both thread and coroutine environments."""
+    try:
+        # Try to get from ContextVar first (asyncio coroutines)
+        context = _context_context.get()
+        return context if context is not None else {}
+    except LookupError:
+        # Fallback to thread-local if ContextVar not available
+        return {}
+
+
 class BaseFlowContext(containers.DeclarativeContainer):
-    """Base container for flow context with thread-safe dependency injection support."""
+    """Base container for flow context with thread-safe and coroutine-safe dependency injection support."""
 
     # Use ThreadLocalSingleton for thread-local state isolation
     # Each thread gets its own state dictionary
     state: providers.Provider = providers.ThreadLocalSingleton(dict)
     context: providers.Provider = providers.ThreadLocalSingleton(dict)
     shared_data: providers.Provider = providers.Singleton(dict)
+
+    # Context-safe providers for asyncio coroutines
+    async_state: providers.Provider = providers.Factory(_get_context_safe_state)
+    async_context: providers.Provider = providers.Factory(_get_context_safe_context)
 
 
 class Node:
@@ -371,11 +407,13 @@ class Node:
         max_workers: int | None = None,
     ) -> "Node":
         """Fan out to multiple nodes for parallel execution."""
-        if executor != "thread":
+        # Normalize executor type to lowercase for case-insensitive comparison
+        executor_lower = executor.lower()
+        if executor_lower not in ["thread", "async"]:
             raise ValueError(
-                "Only 'thread' executor is supported. ProcessPoolExecutor has been removed to resolve pickle serialization issues."
+                "Only 'thread' and 'async' executors are supported. ProcessPoolExecutor has been removed to resolve pickle serialization issues."
             )
-        return parallel_fan_out(self, nodes, executor, max_workers)
+        return parallel_fan_out(self, nodes, executor_lower, max_workers)
 
     def fan_in(self, aggregator: "Node") -> "Node":
         """Aggregate results using the specified aggregator node."""
@@ -389,11 +427,15 @@ class Node:
         max_workers: int | None = None,
     ) -> "Node":
         """Complete fan-out and fan-in operation in one step."""
-        if executor != "thread":
+        # Normalize executor type to lowercase for case-insensitive comparison
+        executor_lower = executor.lower()
+        if executor_lower not in ["thread", "async"]:
             raise ValueError(
-                "Only 'thread' executor is supported. ProcessPoolExecutor has been removed to resolve pickle serialization issues."
+                "Only 'thread' and 'async' executors are supported. ProcessPoolExecutor has been removed to resolve pickle serialization issues."
             )
-        return parallel_fan_out_in(self, targets, aggregator, executor, max_workers)
+        return parallel_fan_out_in(
+            self, targets, aggregator, executor_lower, max_workers
+        )
 
     def branch_on(self, conditions: dict[bool, "Node"]) -> "Node":
         """Branch execution based on the boolean output of this node."""
@@ -481,6 +523,55 @@ def execute_target_node(node: Node, input_data: Any) -> ParallelResult:
         )
 
 
+async def execute_target_node_async(node: Node, input_data: Any) -> ParallelResult:
+    """Execute a single target node asynchronously with context safety."""
+    import traceback
+
+    start_time = time.time()
+
+    try:
+        # Set context variables for coroutine safety
+        current_state = (_context_state.get() or {}).copy()
+        current_context = (_context_context.get() or {}).copy()
+
+        # Execute in context
+        token_state = _context_state.set(current_state)
+        token_context = _context_context.set(current_context)
+
+        try:
+            # Check if the node function is async
+            if inspect.iscoroutinefunction(node.func):
+                result = await node.func(input_data)
+            else:
+                result = node(input_data)
+
+            execution_time = time.time() - start_time
+
+            return ParallelResult(
+                node_name=node.name,
+                success=True,
+                result=result,
+                execution_time=execution_time,
+            )
+        finally:
+            # Reset context variables
+            _context_state.reset(token_state)
+            _context_context.reset(token_context)
+
+    except Exception as e:
+        execution_time = time.time() - start_time
+        error_traceback = traceback.format_exc()
+        logger.error(f"Node '{node.name}' failed: {e}")
+
+        return ParallelResult(
+            node_name=node.name,
+            success=False,
+            error=str(e),
+            error_traceback=error_traceback,
+            execution_time=execution_time,
+        )
+
+
 def parallel_fan_out(
     source: Node,
     targets: list[Node],
@@ -488,13 +579,13 @@ def parallel_fan_out(
     max_workers: int | None = None,
 ) -> Node:
     """
-    Simplified parallel fan-out execution with ThreadPoolExecutor only.
+    Parallel fan-out execution with support for both ThreadPoolExecutor and asyncio.
 
     Args:
         source: Source node to execute first
         targets: List of target nodes for parallel execution
-        executor: Must be 'thread' (ProcessPoolExecutor removed)
-        max_workers: Maximum worker threads
+        executor: 'thread' for ThreadPoolExecutor or 'async' for asyncio
+        max_workers: Maximum worker threads (ignored for async)
 
     Returns:
         Node that performs parallel fan-out execution
@@ -502,17 +593,77 @@ def parallel_fan_out(
     if not targets:
         raise ValueError("Target nodes list cannot be empty")
 
-    if executor != "thread":
+    # Normalize executor type to lowercase for case-insensitive comparison
+    executor = executor.lower()
+    if executor not in ["thread", "async"]:
         raise ValueError(
-            "Only 'thread' executor is supported. ProcessPoolExecutor has been removed to resolve pickle serialization issues."
+            "Only 'thread' and 'async' executors are supported. ProcessPoolExecutor has been removed to resolve pickle serialization issues."
         )
 
     executor_map = {"thread": ThreadPoolExecutor}
 
-    def run(*args: Any, **kwargs: Any) -> dict[str, ParallelResult]:
+    async def run_async(*args: Any, **kwargs: Any) -> dict[str, ParallelResult]:
         target_names = [t.name for t in targets]
         composition_name = f"({source.name} -> [{', '.join(target_names)}])"
-        logger.info(f"Executing Parallel Fan-Out: {composition_name}")
+        logger.info(f"Executing Async Parallel Fan-Out: {composition_name}")
+
+        # 执行源节点
+        if inspect.iscoroutinefunction(source.func):
+            source_result = await source.func(*args, **kwargs)
+        else:
+            source_result = source(*args, **kwargs)
+
+        # 设置当前协程的context
+        current_state = (_context_state.get() or {}).copy()
+        current_context = (_context_context.get() or {}).copy()
+
+        # 为每个任务创建协程
+        tasks = []
+        for node in targets:
+            # 在每个协程中设置独立的context
+            task = asyncio.create_task(execute_target_node_async(node, source_result))
+            tasks.append(task)
+
+        # 并行执行所有任务
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        # 收集结果
+        parallel_results: dict[str, ParallelResult] = {}
+        for i, result in enumerate(results):
+            node = targets[i]
+
+            if isinstance(result, Exception):
+                import traceback
+
+                error_result_key = _generate_unique_result_key(
+                    node.name, parallel_results
+                )
+                parallel_results[error_result_key] = ParallelResult(
+                    node_name=node.name,
+                    success=False,
+                    error=str(result),
+                    error_traceback=traceback.format_exception(
+                        type(result), result, result.__traceback__
+                    ),
+                )
+            else:
+                result_key = _generate_unique_result_key(
+                    result.node_name, parallel_results
+                )
+                parallel_results[result_key] = result
+                logger.debug(
+                    f"Collected async result from '{result_key}': success={result.success}"
+                )
+
+        logger.info(
+            f"Async parallel fan-out completed with {len(parallel_results)} results"
+        )
+        return parallel_results
+
+    def run_thread(*args: Any, **kwargs: Any) -> dict[str, ParallelResult]:
+        target_names = [t.name for t in targets]
+        composition_name = f"({source.name} -> [{', '.join(target_names)}])"
+        logger.info(f"Executing Thread Parallel Fan-Out: {composition_name}")
 
         # 执行源节点
         source_result = source(*args, **kwargs)
@@ -560,14 +711,19 @@ def parallel_fan_out(
                     )
 
         # 返回并行结果
-        logger.info(f"Parallel fan-out completed with {len(parallel_results)} results")
+        logger.info(
+            f"Thread parallel fan-out completed with {len(parallel_results)} results"
+        )
         return parallel_results
 
-    # 创建新的Node
+    # 创建新的Node - 根据executor类型选择执行函数
     target_names = [t.name for t in targets]
     composition_name = f"({source.name} -> [{', '.join(target_names)}])"
 
-    return Node(func=run, name=composition_name)
+    if executor == "async":
+        return Node(func=run_async, name=composition_name)
+    else:
+        return Node(func=run_thread, name=composition_name)
 
 
 def parallel_fan_in(fan_out_node: Node, aggregator: Node) -> Node:
@@ -606,21 +762,23 @@ def parallel_fan_out_in(
     max_workers: int | None = None,
 ) -> Node:
     """
-    Simplified convenience function that combines fan-out and fan-in into a single operation.
+    Convenience function that combines fan-out and fan-in into a single operation.
 
     Args:
         source: Source node to execute first
         targets: List of target nodes for parallel execution
         aggregator: Aggregator node that combines parallel results
-        executor: Must be 'thread' (ProcessPoolExecutor removed)
-        max_workers: Maximum worker threads
+        executor: 'thread' for ThreadPoolExecutor or 'async' for asyncio
+        max_workers: Maximum worker threads (ignored for async)
 
     Returns:
         Node that performs complete fan-out-in operation
     """
-    if executor != "thread":
+    # Normalize executor type to lowercase for case-insensitive comparison
+    executor = executor.lower()
+    if executor not in ["thread", "async"]:
         raise ValueError(
-            "Only 'thread' executor is supported. ProcessPoolExecutor has been removed to resolve pickle serialization issues."
+            "Only 'thread' and 'async' executors are supported. ProcessPoolExecutor has been removed to resolve pickle serialization issues."
         )
     # 创建fan-out节点
     fan_out_node = parallel_fan_out(
