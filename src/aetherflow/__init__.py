@@ -3,7 +3,7 @@ import inspect
 import logging
 import time
 from collections.abc import Callable
-from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from typing import Any
 
@@ -371,6 +371,10 @@ class Node:
         max_workers: int | None = None,
     ) -> "Node":
         """Fan out to multiple nodes for parallel execution."""
+        if executor != "thread":
+            raise ValueError(
+                "Only 'thread' executor is supported. ProcessPoolExecutor has been removed to resolve pickle serialization issues."
+            )
         return parallel_fan_out(self, nodes, executor, max_workers)
 
     def fan_in(self, aggregator: "Node") -> "Node":
@@ -385,6 +389,10 @@ class Node:
         max_workers: int | None = None,
     ) -> "Node":
         """Complete fan-out and fan-in operation in one step."""
+        if executor != "thread":
+            raise ValueError(
+                "Only 'thread' executor is supported. ProcessPoolExecutor has been removed to resolve pickle serialization issues."
+            )
         return parallel_fan_out_in(self, targets, aggregator, executor, max_workers)
 
     def branch_on(self, conditions: dict[bool, "Node"]) -> "Node":
@@ -480,13 +488,13 @@ def parallel_fan_out(
     max_workers: int | None = None,
 ) -> Node:
     """
-    Simplified parallel fan-out execution with direct parameter passing.
+    Simplified parallel fan-out execution with ThreadPoolExecutor only.
 
     Args:
         source: Source node to execute first
         targets: List of target nodes for parallel execution
-        executor: 'thread' or 'process' executor type
-        max_workers: Maximum worker threads/processes
+        executor: Must be 'thread' (ProcessPoolExecutor removed)
+        max_workers: Maximum worker threads
 
     Returns:
         Node that performs parallel fan-out execution
@@ -494,7 +502,12 @@ def parallel_fan_out(
     if not targets:
         raise ValueError("Target nodes list cannot be empty")
 
-    executor_map = {"thread": ThreadPoolExecutor, "process": ProcessPoolExecutor}
+    if executor != "thread":
+        raise ValueError(
+            "Only 'thread' executor is supported. ProcessPoolExecutor has been removed to resolve pickle serialization issues."
+        )
+
+    executor_map = {"thread": ThreadPoolExecutor}
 
     def run(*args: Any, **kwargs: Any) -> dict[str, ParallelResult]:
         target_names = [t.name for t in targets]
@@ -599,12 +612,16 @@ def parallel_fan_out_in(
         source: Source node to execute first
         targets: List of target nodes for parallel execution
         aggregator: Aggregator node that combines parallel results
-        executor: 'thread' or 'process' executor type
-        max_workers: Maximum worker threads/processes
+        executor: Must be 'thread' (ProcessPoolExecutor removed)
+        max_workers: Maximum worker threads
 
     Returns:
         Node that performs complete fan-out-in operation
     """
+    if executor != "thread":
+        raise ValueError(
+            "Only 'thread' executor is supported. ProcessPoolExecutor has been removed to resolve pickle serialization issues."
+        )
     # 创建fan-out节点
     fan_out_node = parallel_fan_out(
         source=source, targets=targets, executor=executor, max_workers=max_workers

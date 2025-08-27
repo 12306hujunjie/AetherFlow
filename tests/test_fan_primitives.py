@@ -156,50 +156,30 @@ def test_fan_out_to_single_target():
 
 
 def test_fan_out_to_executor_types():
-    """测试fan_out_to不同executor类型"""
-    print("\n=== 测试fan_out_to不同executor类型 ===")
+    """测试fan_out_to executor类型验证"""
+    print("\n=== 测试fan_out_to executor类型验证 ===")
 
-    # 创建3个目标节点 - 线程池使用Node包装器
+    # 创建3个目标节点
     from tests.utils.node_factory import success_processor_1
 
-    thread_target_nodes = [success_processor_1 for i in range(3)]
+    target_nodes = [success_processor_1 for i in range(3)]
 
-    # 创建3个目标节点 - 进程池使用纯函数
-    def simple_processor_func(data: StandardTestData) -> StandardTestData:
-        return StandardTestData(value=data.value * 2)
-
-    process_target_nodes = [
-        Node(simple_processor_func, name=f"simple_processor_{i}") for i in range(3)
-    ]
-
-    # 测试ThreadPoolExecutor
+    # 测试ThreadPoolExecutor - 应该正常工作
     thread_pipeline = source_function.fan_out_to(
-        thread_target_nodes, executor="thread", max_workers=2
+        target_nodes, executor="thread", max_workers=2
     )
     thread_results = thread_pipeline(5)
 
     print(f"Thread executor结果数量: {len(thread_results)}")
     assert len(thread_results) == 3, "Thread executor应该有3个结果"
 
-    # 测试ProcessPoolExecutor
-    process_pipeline = source_function.fan_out_to(
-        process_target_nodes, executor="process", max_workers=2
-    )
-    process_results = process_pipeline(5)
+    # 测试ProcessPoolExecutor - 应该抛出异常
+    import pytest
 
-    print(f"Process executor结果数量: {len(process_results)}")
-    assert len(process_results) == 3, "Process executor应该有3个结果"
+    with pytest.raises(ValueError, match="Only 'thread' executor is supported"):
+        source_function.fan_out_to(target_nodes, executor="process", max_workers=2)
 
-    # 验证两种executor的结果一致性
-    for key in thread_results.keys():
-        if key in process_results:
-            thread_val = thread_results[key].result.value
-            process_val = process_results[key].result.value
-            assert thread_val == process_val, (
-                f"Thread和Process执行结果应该一致: {thread_val} vs {process_val}"
-            )
-
-    print("✅ fan_out_to不同executor类型测试通过")
+    print("✅ fan_out_to executor类型验证测试通过")
 
 
 # ============================================================================
