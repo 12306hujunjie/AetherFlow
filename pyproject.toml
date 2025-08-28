@@ -33,9 +33,6 @@ requires = ["pdm-backend"]
 build-backend = "pdm.backend"
 
 
-[tool.pdm]
-distribution = true
-
 [dependency-groups]
 dev = [
     "pytest>=8.4.1",
@@ -46,6 +43,7 @@ dev = [
     "ruff>=0.12.9",
     "mypy>=1.13.0",
     "bandit>=1.7.10",
+    "pytest-asyncio>=1.1.0",
 ]
 
 # Ruff configuration
@@ -101,3 +99,6 @@ show_error_codes = true
 [tool.bandit]
 skips = ["B101"]  # Skip assert_used test
 exclude_dirs = ["tests"]
+
+[tool.pdm]
+distribution = true
