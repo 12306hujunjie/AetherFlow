@@ -176,7 +176,9 @@ def test_fan_out_to_executor_types():
     # 测试ProcessPoolExecutor - 应该抛出异常
     import pytest
 
-    with pytest.raises(ValueError, match="Only 'thread' executor is supported"):
+    with pytest.raises(
+        ValueError, match="Only 'thread', 'async', and 'auto' executors are supported"
+    ):
         source_function.fan_out_to(target_nodes, executor="process", max_workers=2)
 
     print("✅ fan_out_to executor类型验证测试通过")

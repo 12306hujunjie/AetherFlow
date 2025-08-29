@@ -1,9 +1,11 @@
+import asyncio
 import functools
 import inspect
 import logging
 import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any
 
@@ -177,11 +179,188 @@ class RetryConfig:
         return min(delay, self.max_delay)
 
 
+def _get_func_name(func: Any, fallback_name: str | None = None) -> str:
+    """安全获取函数名称"""
+    if hasattr(func, "__name__"):
+        return str(func.__name__)
+    elif hasattr(func, "func") and hasattr(func.func, "__name__"):  # partial对象
+        return str(func.func.__name__)
+    elif hasattr(func, "name"):  # Node对象
+        return str(func.name)
+    elif fallback_name:
+        return fallback_name
+    else:
+        return "unknown_function"
+
+
+def retry_decorator(
+    config: RetryConfig,
+    node_name: str | None = None,
+) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+    """重试装饰器
+
+    Args:
+        config: RetryConfig 配置模型
+        node_name: 节点名称，用于异常信息
+    """
+
+    def decorator(func: Callable) -> Callable:
+        func_name = node_name or _get_func_name(func)
+
+        if inspect.iscoroutinefunction(func):
+            # 异步函数wrapper
+            @functools.wraps(func)
+            async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
+                for attempt in range(config.retry_count + 1):
+                    try:
+                        logger.debug(
+                            f"执行节点 {func_name}，尝试 {attempt + 1}/{config.retry_count + 1}"
+                        )
+                        result = await func(*args, **kwargs)  # 异步调用
+
+                        if attempt > 0:
+                            logger.info(
+                                f"节点 {func_name} 在第 {attempt + 1} 次尝试后成功"
+                            )
+                        return result
+
+                    except (KeyboardInterrupt, SystemExit):
+                        raise
+                    except Exception as e:
+                        if not config.should_retry(e):
+                            raise NodeExecutionException(
+                                f"节点执行失败，异常类型不支持重试: {type(e).__name__}",
+                                node_name=func_name,
+                                original_exception=e,
+                            ) from e
+
+                        if attempt == config.retry_count:
+                            raise NodeRetryExhaustedException(
+                                f"节点 {func_name} 重试次数耗尽，最后异常: {type(e).__name__}: {e}",
+                                node_name=func_name,
+                                retry_count=config.retry_count,
+                                last_exception=e,
+                            ) from e
+
+                        delay = config.get_delay(attempt)
+                        logger.warning(
+                            f"节点 {func_name} 第 {attempt + 1} 次尝试失败: {e}，{delay:.2f}秒后重试"
+                        )
+                        await asyncio.sleep(delay)  # 异步延迟
+
+            return async_wrapper
+        else:
+            # 同步函数wrapper
+            @functools.wraps(func)
+            def sync_wrapper(*args: Any, **kwargs: Any) -> Any:
+                for attempt in range(config.retry_count + 1):
+                    try:
+                        logger.debug(
+                            f"执行节点 {func_name}，尝试 {attempt + 1}/{config.retry_count + 1}"
+                        )
+                        result = func(*args, **kwargs)  # 同步调用
+
+                        if attempt > 0:
+                            logger.info(
+                                f"节点 {func_name} 在第 {attempt + 1} 次尝试后成功"
+                            )
+                        return result
+
+                    except (KeyboardInterrupt, SystemExit):
+                        raise
+                    except Exception as e:
+                        if not config.should_retry(e):
+                            raise NodeExecutionException(
+                                f"节点执行失败，异常类型不支持重试: {type(e).__name__}",
+                                node_name=func_name,
+                                original_exception=e,
+                            ) from e
+
+                        if attempt == config.retry_count:
+                            raise NodeRetryExhaustedException(
+                                f"节点 {func_name} 重试次数耗尽，最后异常: {type(e).__name__}: {e}",
+                                node_name=func_name,
+                                retry_count=config.retry_count,
+                                last_exception=e,
+                            ) from e
+
+                        delay = config.get_delay(attempt)
+                        logger.warning(
+                            f"节点 {func_name} 第 {attempt + 1} 次尝试失败: {e}，{delay:.2f}秒后重试"
+                        )
+                        time.sleep(delay)  # 同步延迟
+
+            return sync_wrapper
+
+    return decorator
+
+
+# Context variables for asyncio coroutine safety
+_context_state: ContextVar[dict | None] = ContextVar("aetherflow_state", default=None)
+_context_context: ContextVar[dict | None] = ContextVar(
+    "aetherflow_context", default=None
+)
+
+
+# ==================== 自定义ContextVar Provider ====================
+
+
+class ContextVarProvider(providers.Provider):
+    """自定义Provider类，支持ContextVar的协程安全依赖注入。
+
+    这个Provider替代了直接调用ContextVar.get()的方式，
+    提供了正确的dependency-injector集成。
+    """
+
+    def __init__(self, default_factory: Callable[[], Any] = dict):
+        """初始化ContextVarProvider。
+
+        Args:
+            default_factory: 创建默认值的工厂函数，默认为dict
+        """
+        super().__init__()
+        self._context_var = ContextVar(f"aetherflow_{id(self)}", default=None)
+        self._default_factory = default_factory
+
+    def _provide(self, *args: Any, **kwargs: Any) -> Any:
+        """提供协程安全的状态值。
+
+        Returns:
+            ContextVar中的值，如果未设置则返回默认值
+        """
+        try:
+            value = self._context_var.get()
+            if value is None:
+                # 如果未设置，创建并设置默认值
+                value = self._default_factory()
+                self._context_var.set(value)
+            return value
+        except LookupError:
+            # 如果ContextVar未初始化，创建默认值
+            value = self._default_factory()
+            self._context_var.set(value)
+            return value
+
+
+class BaseFlowContext(containers.DeclarativeContainer):
+    """Base container for flow context with thread-safe and coroutine-safe dependency injection support."""
+
+    # Use ThreadLocalSingleton for thread-local state isolation
+    # Each thread gets its own state dictionary
+    state: providers.Provider = providers.ThreadLocalSingleton(dict)
+    context: providers.Provider = providers.ThreadLocalSingleton(dict)
+    shared_data: providers.Provider = providers.Singleton(dict)
+
+    # Coroutine-safe providers using ContextVar for asyncio
+    async_state: providers.Provider = ContextVarProvider(dict)
+    async_context: providers.Provider = ContextVarProvider(dict)
+
+
 def custom_validate_call(
     validate_return: bool = True,
-    config: ConfigDict | None = None,
-    node_name: str | None = None,
-) -> Callable[[Callable], Callable]:
+    config: ConfigDict = None,
+    node_name: str = None,
+):
     """
     自定义validate_call包装器，使用Pydantic最佳实践区分输入验证和输出验证异常
 
@@ -209,138 +388,56 @@ def custom_validate_call(
         if validate_return and sig.return_annotation != inspect.Signature.empty:
             return_type_adapter = TypeAdapter(sig.return_annotation)
 
-        @functools.wraps(func)
-        def wrapper(*args, **kwargs):
-            try:
-                # 第一步：验证输入参数并执行函数
-                result = input_validator(*args, **kwargs)
-            except ValidationError as e:
-                # 输入参数验证失败
-                raise ValidationInputException(
-                    f"输入参数验证失败: {e}",
-                    validation_error=e,
-                    node_name=node_name or _get_func_name(func),
-                ) from e
+        # 提取公共逻辑
+        func_name = node_name or _get_func_name(func)
 
-            # 第二步：验证返回值（如果需要）
+        def create_input_exception(e):
+            return ValidationInputException(
+                f"输入参数验证失败: {e}",
+                validation_error=e,
+                node_name=func_name,
+            )
+
+        def create_output_exception(e):
+            return ValidationOutputException(
+                f"返回值验证失败: {e}",
+                validation_error=e,
+                node_name=func_name,
+            )
+
+        def validate_result(result):
             if return_type_adapter:
                 try:
                     return_type_adapter.validate_python(result)
                 except ValidationError as e:
-                    # 返回值验证失败
-                    raise ValidationOutputException(
-                        f"返回值验证失败: {e}",
-                        validation_error=e,
-                        node_name=node_name or _get_func_name(func),
-                    ) from e
-
+                    raise create_output_exception(e) from e
             return result
 
-        return wrapper
+        # 根据函数类型提供对应的wrapper
+        if inspect.iscoroutinefunction(func):
 
-    return decorator
-
-
-def _get_func_name(func: Any, fallback_name: str | None = None) -> str:
-    """安全获取函数名称"""
-    if hasattr(func, "__name__"):
-        return str(func.__name__)
-    elif hasattr(func, "func") and hasattr(func.func, "__name__"):  # partial对象
-        return str(func.func.__name__)
-    elif hasattr(func, "name"):  # Node对象
-        return str(func.name)
-    elif fallback_name:
-        return fallback_name
-    else:
-        return "unknown_function"
-
-
-def retry_decorator(
-    config: RetryConfig,
-    node_name: str = None,
-):
-    """重试装饰器
-
-    Args:
-        config: RetryConfig 配置模型
-        node_name: 节点名称，用于异常信息
-    """
-
-    def decorator(func: Callable) -> Callable:
-        @functools.wraps(func)
-        def wrapper(*args: Any, **kwargs: Any) -> Any:
-            last_exception = None
-            func_name = node_name or _get_func_name(func)
-
-            for attempt in range(config.retry_count + 1):  # +1 因为包含初始尝试
+            @functools.wraps(func)
+            async def async_wrapper(*args, **kwargs):
                 try:
-                    logger.debug(
-                        f"执行节点 {func_name}，尝试 {attempt + 1}/{config.retry_count + 1}"
-                    )
-                    result = func(*args, **kwargs)
+                    result = await input_validator(*args, **kwargs)
+                except ValidationError as e:
+                    raise create_input_exception(e) from e
+                return validate_result(result)
 
-                    if attempt > 0:
-                        logger.info(f"节点 {func_name} 在第 {attempt + 1} 次尝试后成功")
+            return async_wrapper
+        else:
 
-                    return result
+            @functools.wraps(func)
+            def sync_wrapper(*args, **kwargs):
+                try:
+                    result = input_validator(*args, **kwargs)
+                except ValidationError as e:
+                    raise create_input_exception(e) from e
+                return validate_result(result)
 
-                except (KeyboardInterrupt, SystemExit) as e:
-                    # 系统级异常（调试器中断或系统退出），直接重新抛出
-                    logger.debug(f"节点 {func_name} 收到系统级异常: {type(e).__name__}")
-                    raise
-                except Exception as e:
-                    last_exception = e
-
-                    # 检查是否应该重试
-                    if not config.should_retry(e):
-                        logger.error(f"节点 {func_name} 遇到不可重试异常: {e}")
-                        raise NodeExecutionException(
-                            f"节点执行失败，异常类型不支持重试: {type(e).__name__}",
-                            node_name=func_name,
-                            original_exception=e,
-                        ) from e
-
-                    # 如果是最后一次尝试，抛出重试耗尽异常
-                    if attempt == config.retry_count:
-                        logger.error(
-                            f"节点 {func_name} 重试 {config.retry_count} 次后仍然失败: {e}"
-                        )
-                        raise NodeRetryExhaustedException(
-                            f"节点 {func_name} 重试次数耗尽，最后异常: {type(e).__name__}: {e}",
-                            node_name=func_name,
-                            retry_count=config.retry_count,
-                            last_exception=e,
-                        ) from e
-
-                    # 计算延迟时间并等待
-                    delay = config.get_delay(attempt)
-                    logger.warning(
-                        f"节点 {func_name} 第 {attempt + 1} 次尝试失败: {e}，"
-                        f"{delay:.2f}秒后重试"
-                    )
-                    time.sleep(delay)
-
-            # 理论上不会到达这里，但为了安全起见
-            raise NodeRetryExhaustedException(
-                "节点重试逻辑异常",
-                node_name=node_name or _get_func_name(func, "unknown_node"),
-                retry_count=config.retry_count,
-                last_exception=last_exception,
-            )
-
-        return wrapper
+            return sync_wrapper
 
     return decorator
-
-
-class BaseFlowContext(containers.DeclarativeContainer):
-    """Base container for flow context with thread-safe dependency injection support."""
-
-    # Use ThreadLocalSingleton for thread-local state isolation
-    # Each thread gets its own state dictionary
-    state: providers.Provider = providers.ThreadLocalSingleton(dict)
-    context: providers.Provider = providers.ThreadLocalSingleton(dict)
-    shared_data: providers.Provider = providers.Singleton(dict)
 
 
 class Node:
@@ -351,14 +448,38 @@ class Node:
         func: Callable,
         name: str,
         is_start_node: bool = True,
+        is_async: bool | None = None,
     ):
         # 配置Pydantic支持任意类型（包括dependency injection的类型）
         self.func = func
         self.name = name
         self.is_start_node = is_start_node
+        # 智能检测异步特性：处理Node对象、装饰器等复杂情况
+        if is_async is not None:
+            # 显式传入，直接使用
+            self.is_async = is_async
+        elif isinstance(func, Node):
+            # func是Node对象，使用其is_async属性
+            self.is_async = func.is_async
+        else:
+            # func是普通函数，使用inspect检测
+            self.is_async = inspect.iscoroutinefunction(func)
 
-    def __call__(self, *args, **kwargs):
-        return self.func(*args, **kwargs)
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        """智能异步适配调用：根据函数类型和执行上下文自动处理同步/异步调用。"""
+        if self.is_async:
+            # 异步函数：根据当前执行上下文智能处理
+            try:
+                # 检查是否在事件循环中
+                asyncio.get_running_loop()
+                # 在事件循环中，返回协程对象让调用者await
+                return self.func(*args, **kwargs)
+            except RuntimeError:
+                # 不在事件循环中，创建新事件循环同步执行
+                return asyncio.run(self.func(*args, **kwargs))
+        else:
+            # 同步函数：直接执行
+            return self.func(*args, **kwargs)
 
     def then(self, next_node: "Node") -> "Node":
         """Chain this node with another node for sequential execution."""
@@ -371,11 +492,13 @@ class Node:
         max_workers: int | None = None,
     ) -> "Node":
         """Fan out to multiple nodes for parallel execution."""
-        if executor != "thread":
+        # Normalize executor type to lowercase for case-insensitive comparison
+        executor_lower = executor.lower()
+        if executor_lower not in ["thread", "async", "auto"]:
             raise ValueError(
-                "Only 'thread' executor is supported. ProcessPoolExecutor has been removed to resolve pickle serialization issues."
+                "Only 'thread', 'async', and 'auto' executors are supported. ProcessPoolExecutor has been removed to resolve pickle serialization issues."
             )
-        return parallel_fan_out(self, nodes, executor, max_workers)
+        return parallel_fan_out(self, nodes, executor_lower, max_workers)
 
     def fan_in(self, aggregator: "Node") -> "Node":
         """Aggregate results using the specified aggregator node."""
@@ -389,11 +512,15 @@ class Node:
         max_workers: int | None = None,
     ) -> "Node":
         """Complete fan-out and fan-in operation in one step."""
-        if executor != "thread":
+        # Normalize executor type to lowercase for case-insensitive comparison
+        executor_lower = executor.lower()
+        if executor_lower not in ["thread", "async", "auto"]:
             raise ValueError(
-                "Only 'thread' executor is supported. ProcessPoolExecutor has been removed to resolve pickle serialization issues."
+                "Only 'thread', 'async', and 'auto' executors are supported. ProcessPoolExecutor has been removed to resolve pickle serialization issues."
             )
-        return parallel_fan_out_in(self, targets, aggregator, executor, max_workers)
+        return parallel_fan_out_in(
+            self, targets, aggregator, executor_lower, max_workers
+        )
 
     def branch_on(self, conditions: dict[bool, "Node"]) -> "Node":
         """Branch execution based on the boolean output of this node."""
@@ -413,19 +540,37 @@ class Node:
 
 
 def sequential_composition(left: Node, right: Node) -> Node:
-    """Sequential execution that combines two nodes with type safety and intelligent retry configuration inheritance."""
+    """Sequential execution that combines two nodes with one-time type inference."""
 
-    def run(*args: Any, **kwargs: Any) -> Any:
-        # 输入传给左节点
-        left_result = left(*args, **kwargs)
-        # 左节点输出传给右节点
-        right_result = right(left_result)
-        return right_result
+    # 组合时一次性检测是否有异步节点
+    has_async = left.is_async or right.is_async
 
-    # 创建描述性名称
     composition_name = f"({left.name} -> {right.name})"
 
-    return Node(func=run, name=composition_name, is_start_node=False)
+    if has_async:
+        # 如果包含异步节点，创建异步组合函数
+        async def async_run(*args: Any, **kwargs: Any) -> Any:
+            # 执行左节点，使用Node.__call__智能适配
+            left_result = (
+                await left(*args, **kwargs) if left.is_async else left(*args, **kwargs)
+            )
+
+            # 执行右节点，使用Node.__call__智能适配
+            right_result = (
+                await right(left_result) if right.is_async else right(left_result)
+            )
+
+            return right_result
+
+        return Node(func=async_run, name=composition_name, is_start_node=False)
+    else:
+        # 如果都是同步节点，创建同步组合函数
+        def run(*args: Any, **kwargs: Any) -> Any:
+            left_result = left(*args, **kwargs)
+            right_result = right(left_result)
+            return right_result
+
+        return Node(func=run, name=composition_name, is_start_node=False)
 
 
 def _generate_unique_result_key(base_name: str, existing_results: dict) -> str:
@@ -452,12 +597,13 @@ def _generate_unique_result_key(base_name: str, existing_results: dict) -> str:
 
 # 定义并行任务执行函数
 def execute_target_node(node: Node, input_data: Any) -> ParallelResult:
-    """Execute a single target node with the provided input."""
+    """Execute a single target node with the provided input using intelligent async/sync handling."""
     import traceback
 
     start_time = time.time()
 
     try:
+        # 使用Node.__call__智能异步适配
         result = node(input_data)
         execution_time = time.time() - start_time
 
@@ -488,13 +634,13 @@ def parallel_fan_out(
     max_workers: int | None = None,
 ) -> Node:
     """
-    Simplified parallel fan-out execution with ThreadPoolExecutor only.
+    Simplified parallel fan-out execution with type-based executor selection.
 
     Args:
         source: Source node to execute first
         targets: List of target nodes for parallel execution
-        executor: Must be 'thread' (ProcessPoolExecutor removed)
-        max_workers: Maximum worker threads
+        executor: 'thread', 'async', or 'auto' for automatic selection
+        max_workers: Maximum worker threads (ignored for async)
 
     Returns:
         Node that performs parallel fan-out execution
@@ -502,77 +648,146 @@ def parallel_fan_out(
     if not targets:
         raise ValueError("Target nodes list cannot be empty")
 
-    if executor != "thread":
-        raise ValueError(
-            "Only 'thread' executor is supported. ProcessPoolExecutor has been removed to resolve pickle serialization issues."
-        )
+    executor = executor.lower()
 
-    executor_map = {"thread": ThreadPoolExecutor}
+    # Simplified 'auto' executor selection based on one-time type inference
+    if executor == "auto":
+        all_nodes = [source] + targets
+        has_async = any(node.is_async for node in all_nodes)
+        executor = "async" if has_async else "thread"
+        logger.info(f"Auto-selected executor '{executor}' based on node types")
 
-    def run(*args: Any, **kwargs: Any) -> dict[str, ParallelResult]:
-        target_names = [t.name for t in targets]
-        composition_name = f"({source.name} -> [{', '.join(target_names)}])"
-        logger.info(f"Executing Parallel Fan-Out: {composition_name}")
+    if executor not in ["thread", "async"]:
+        raise ValueError("Only 'thread', 'async', and 'auto' executors are supported.")
 
-        # 执行源节点
-        source_result = source(*args, **kwargs)
+    target_names = [t.name for t in targets]
+    composition_name = f"({source.name} -> [{', '.join(target_names)}])"
 
-        # 执行并行任务
-        parallel_results: dict[str, ParallelResult] = {}
+    if executor == "async":
+        # Simplified async version using Node.__call__ smart adaptation
+        async def run_async(*args: Any, **kwargs: Any) -> dict[str, ParallelResult]:
+            logger.info(f"Executing Async Parallel Fan-Out: {composition_name}")
 
-        with executor_map[executor](max_workers=max_workers) as executor_instance:
-            # 提交所有并行任务
-            future_to_node = {
-                executor_instance.submit(execute_target_node, node, source_result): node
-                for node in targets
-            }
+            # Execute source node with consistent async handling
+            source_result = (
+                await source(*args, **kwargs)
+                if source.is_async
+                else source(*args, **kwargs)
+            )
 
-            # 收集结果
-            for future in as_completed(future_to_node):
-                node = future_to_node[future]
+            # Execute target nodes in parallel
+            async def execute_async_target(
+                node: Node, input_data: Any
+            ) -> ParallelResult:
+                start_time = time.time()
                 try:
-                    parallel_result = future.result()
-
-                    # 生成唯一的结果键
-                    result_key = _generate_unique_result_key(
-                        parallel_result.node_name, parallel_results
+                    # Consistent async handling with sequential_composition
+                    result = (
+                        await node(input_data) if node.is_async else node(input_data)
                     )
 
-                    parallel_results[result_key] = parallel_result
-                    logger.debug(
-                        f"Collected result from '{result_key}': success={parallel_result.success}"
+                    execution_time = time.time() - start_time
+                    return ParallelResult(
+                        node_name=node.name,
+                        success=True,
+                        result=result,
+                        execution_time=execution_time,
                     )
-
                 except Exception as e:
                     import traceback
 
-                    logger.error(f"Failed to get result from '{node.name}': {e}")
-
-                    # 生成唯一的结果键以避免异常情况下的键覆盖
-                    error_result_key = _generate_unique_result_key(
-                        node.name, parallel_results
-                    )
-                    parallel_results[error_result_key] = ParallelResult(
+                    execution_time = time.time() - start_time
+                    return ParallelResult(
                         node_name=node.name,
                         success=False,
                         error=str(e),
                         error_traceback=traceback.format_exc(),
+                        execution_time=execution_time,
                     )
 
-        # 返回并行结果
-        logger.info(f"Parallel fan-out completed with {len(parallel_results)} results")
-        return parallel_results
+            # Create and execute tasks
+            tasks = [execute_async_target(node, source_result) for node in targets]
+            results = await asyncio.gather(*tasks)
 
-    # 创建新的Node
-    target_names = [t.name for t in targets]
-    composition_name = f"({source.name} -> [{', '.join(target_names)}])"
+            # Collect results with unique keys
+            parallel_results: dict[str, ParallelResult] = {}
+            for result in results:
+                result_key = _generate_unique_result_key(
+                    result.node_name, parallel_results
+                )
+                parallel_results[result_key] = result
 
-    return Node(func=run, name=composition_name)
+            logger.info(
+                f"Async parallel fan-out completed with {len(parallel_results)} results"
+            )
+            return parallel_results
+
+        return Node(func=run_async, name=composition_name)
+
+    else:
+        # Simplified thread version using Node.__call__ smart adaptation
+        def run_thread(*args: Any, **kwargs: Any) -> dict[str, ParallelResult]:
+            logger.info(f"Executing Thread Parallel Fan-Out: {composition_name}")
+
+            # Execute source node with smart adaptation
+            source_result = source(*args, **kwargs)
+
+            # Execute target nodes in parallel using ThreadPoolExecutor
+            parallel_results: dict[str, ParallelResult] = {}
+
+            with ThreadPoolExecutor(max_workers=max_workers) as executor_instance:
+                # Submit all parallel tasks
+                future_to_node = {
+                    executor_instance.submit(
+                        execute_target_node, node, source_result
+                    ): node
+                    for node in targets
+                }
+
+                # Collect results
+                for future in as_completed(future_to_node):
+                    node = future_to_node[future]
+                    try:
+                        parallel_result = future.result()
+
+                        # Generate unique result key
+                        result_key = _generate_unique_result_key(
+                            parallel_result.node_name, parallel_results
+                        )
+
+                        parallel_results[result_key] = parallel_result
+                        logger.debug(
+                            f"Collected result from '{result_key}': success={parallel_result.success}"
+                        )
+
+                    except Exception as e:
+                        import traceback
+
+                        logger.error(f"Failed to get result from '{node.name}': {e}")
+
+                        # Generate unique result key to avoid key overwriting in exception cases
+                        error_result_key = _generate_unique_result_key(
+                            node.name, parallel_results
+                        )
+                        parallel_results[error_result_key] = ParallelResult(
+                            node_name=node.name,
+                            success=False,
+                            error=str(e),
+                            error_traceback=traceback.format_exc(),
+                        )
+
+            # Return parallel results
+            logger.info(
+                f"Thread parallel fan-out completed with {len(parallel_results)} results"
+            )
+            return parallel_results
+
+        return Node(func=run_thread, name=composition_name)
 
 
 def parallel_fan_in(fan_out_node: Node, aggregator: Node) -> Node:
     """
-    Simplified parallel fan-in aggregation with direct parameter passing.
+    Simplified parallel fan-in aggregation with intelligent async/sync handling.
 
     Args:
         fan_out_node: The fan-out node to execute first
@@ -582,20 +797,49 @@ def parallel_fan_in(fan_out_node: Node, aggregator: Node) -> Node:
         Node that performs fan-in aggregation
     """
 
-    def run(*args: Any, **kwargs: Any) -> Any:
-        composition_name = f"({fan_out_node.name} -> {aggregator.name})"
-        logger.info(f"Executing Parallel Fan-In: {composition_name}")
+    # 检测是否包含异步节点，与sequential_composition保持一致
+    has_async = fan_out_node.is_async or aggregator.is_async
 
-        # 执行fan-out节点，获取并行结果
-        parallel_results = fan_out_node(*args, **kwargs)
+    composition_name = f"({fan_out_node.name} -> {aggregator.name})"
 
-        # 将并行结果作为参数传递给聚合器
-        aggregator_result = aggregator(parallel_results)
+    if has_async:
+        # 包含异步节点，创建异步组合函数
+        async def async_run(*args: Any, **kwargs: Any) -> Any:
+            logger.info(f"Executing Parallel Fan-In (Async): {composition_name}")
 
-        logger.info("Fan-in aggregation completed successfully")
-        return aggregator_result
+            # 执行fan-out节点，智能适配异步/同步
+            fan_out_result = (
+                await fan_out_node(*args, **kwargs)
+                if fan_out_node.is_async
+                else fan_out_node(*args, **kwargs)
+            )
 
-    return Node(func=run, name=f"({fan_out_node.name} -> {aggregator.name})")
+            # 执行聚合器，智能适配异步/同步
+            aggregator_result = (
+                await aggregator(fan_out_result)
+                if aggregator.is_async
+                else aggregator(fan_out_result)
+            )
+
+            logger.info("Fan-in aggregation completed successfully")
+            return aggregator_result
+
+        return Node(func=async_run, name=composition_name, is_start_node=False)
+    else:
+        # 都是同步节点，创建同步组合函数
+        def run(*args: Any, **kwargs: Any) -> Any:
+            logger.info(f"Executing Parallel Fan-In (Sync): {composition_name}")
+
+            # 执行fan-out节点，获取并行结果
+            parallel_results = fan_out_node(*args, **kwargs)
+
+            # 将并行结果作为参数传递给聚合器
+            aggregator_result = aggregator(parallel_results)
+
+            logger.info("Fan-in aggregation completed successfully")
+            return aggregator_result
+
+        return Node(func=run, name=composition_name, is_start_node=False)
 
 
 def parallel_fan_out_in(
@@ -606,21 +850,34 @@ def parallel_fan_out_in(
     max_workers: int | None = None,
 ) -> Node:
     """
-    Simplified convenience function that combines fan-out and fan-in into a single operation.
+    Convenience function that combines fan-out and fan-in into a single operation.
 
     Args:
         source: Source node to execute first
         targets: List of target nodes for parallel execution
         aggregator: Aggregator node that combines parallel results
-        executor: Must be 'thread' (ProcessPoolExecutor removed)
-        max_workers: Maximum worker threads
+        executor: 'thread', 'async', or 'auto' for automatic selection
+        max_workers: Maximum worker threads (ignored for async)
 
     Returns:
         Node that performs complete fan-out-in operation
     """
-    if executor != "thread":
+    # Normalize executor type to lowercase for case-insensitive comparison
+    executor = executor.lower()
+
+    # Handle 'auto' executor selection using simplified one-time type inference
+    if executor == "auto":
+        # Analyze all nodes (source + targets + aggregator) for optimal executor choice
+        all_nodes = [source] + targets + [aggregator]
+        has_async = any(node.is_async for node in all_nodes)
+        executor = "async" if has_async else "thread"
+        logger.info(
+            f"Auto-selected executor '{executor}' based on node types for fan-out-in"
+        )
+
+    if executor not in ["thread", "async"]:
         raise ValueError(
-            "Only 'thread' executor is supported. ProcessPoolExecutor has been removed to resolve pickle serialization issues."
+            "Only 'thread', 'async', and 'auto' executors are supported. ProcessPoolExecutor has been removed to resolve pickle serialization issues."
         )
     # 创建fan-out节点
     fan_out_node = parallel_fan_out(
@@ -745,71 +1002,80 @@ def node(
     enable_retry: bool = True,
 ) -> Node | Callable:
     """
-    装饰器：从函数创建Node，支持依赖注入、类型验证和重试机制。
+    Decorator: Create Node from function with dependency injection, type validation, and retry mechanism.
 
-    **这是使用依赖注入的标准和唯一推荐方式！**
+    **This is the standard and only recommended way to use dependency injection!**
 
-    使用方式：
+    Usage Examples:
     ```python
-    # 基本用法
+    # Basic sync node
     @node
-    def my_processing_function(data: dict, state: dict = Provide[BaseFlowContext.state]) -> dict:
-        # 你的处理逻辑...
-
-
-        result = process_data(data)
-
+    def process_data(data: dict, state: dict = Provide[BaseFlowContext.state]) -> dict:
+        result = {"processed": data["value"] * 2}
         state['last_result'] = result
         return result
 
-    # 自定义重试配置（指定可重试的异常类型）
+    # Async node with retry
+    @node(retry_count=3, retry_delay=0.5)
+    async def fetch_api_data(url: str) -> dict:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(url)
+            return response.json()
+
+    # Custom retry configuration
     @node(retry_count=5, retry_delay=2.0, exception_types=(ConnectionError, TimeoutError))
-    def api_call_function(data: dict) -> dict:
-        # API调用逻辑...
+    def external_service_call(data: dict) -> dict:
         return call_external_api(data)
 
-    # 用户自定义业务异常（可重试）
-    class MyBusinessError(UserBusinessException):
-        pass
+    # Sequential composition (async/sync mixing)
+    flow = process_data.then(fetch_api_data).then(external_service_call)
+    result = flow({"value": 10})
 
+    # Parallel execution
+    parallel_flow = process_data.fan_out_to([
+        fetch_api_data,
+        external_service_call
+    ])
+    results = parallel_flow({"value": 10})
+
+    # Fan-out-in pattern
     @node
-    def business_logic_function(data: dict) -> dict:
-        if not data:
-            raise MyBusinessError("数据为空，可以重试", retryable=True)
-        return process_business_data(data)
+    def aggregate_results(parallel_results: dict) -> str:
+        successful = [r.result for r in parallel_results.values() if r.success]
+        return f"Aggregated: {len(successful)} results"
 
-    # 禁用重试
+    complete_flow = process_data.fan_out_in([fetch_api_data, external_service_call], aggregate_results)
+    final_result = complete_flow({"value": 10})
+
+    # Disable retry for specific node
     @node(enable_retry=False)
-    def no_retry_function(data: dict) -> dict:
-        # 不需要重试的处理逻辑...
-        return data
-
-    # 使用then链式调用
-    flow = my_node1.then(my_node2).then(my_node3)
-
-    result = flow(input_data)
-
+    def no_retry_operation(data: dict) -> dict:
+        return {"immediate": data}
     ```
-    Args:
 
-        func: 要装饰的函数
-        name: 标识节点名称
-        retry_count: 最大重试次数（默认3次）
-        retry_delay: 基础重试间隔时间（默认1.0秒）
-        exception_types: 需要捕获并重试的异常类型元组（默认空，依赖异常retryable属性）
-        backoff_factor: 退避因子，用于指数退避（默认1.0，无退避）
-        max_delay: 最大延迟时间（默认60秒）
-        enable_retry: 是否启用重试机制（默认True）
+    Args:
+        func: Function to be decorated
+        name: Node identifier name
+        retry_count: Maximum retry attempts (default: 3)
+        retry_delay: Base retry delay in seconds (default: 1.0)
+        exception_types: Tuple of exception types to retry (default: (Exception,))
+        backoff_factor: Backoff multiplier for exponential backoff (default: 1.0)
+        max_delay: Maximum delay time in seconds (default: 60.0)
+        enable_retry: Enable/disable retry mechanism (default: True)
 
     Returns:
-        Node实例或装饰器函数
+        Node instance or decorator function
 
-    注意事项：
-    - 如果函数使用了BaseFlowContext依赖注入，必须使用@node装饰器
-    - 不支持直接使用Node(func)
-    - 在使用依赖注入前需要配置容器: container.wire(modules=[__name__])
-    - 重试机制默认启用，可通过enable_retry=False禁用
-    - 重试仅对指定的异常类型生效，其他异常会立即抛出
+    Notes:
+        - Supports both sync and async functions with intelligent retry handling
+        - Async functions use `asyncio.sleep()` for delays, sync functions use `time.sleep()`
+        - Node objects have `is_async` property indicating if they require async execution
+        - Smart async detection works with Node objects, decorators, and plain functions
+        - If using BaseFlowContext dependency injection, @node decorator is required
+        - Container must be wired before usage: `container.wire(modules=[__name__])`
+        - Retry mechanism is enabled by default and works for both sync and async nodes
+        - Sequential composition automatically handles async/sync mixing via Node.__call__()
+        - Parallel execution supports mixed async/sync nodes with auto executor selection
     """
     config = RetryConfig(
         retry_count, retry_delay, exception_types, backoff_factor, max_delay
@@ -818,6 +1084,9 @@ def node(
     @functools.wraps(Node)
     def decorator(f: Callable) -> Node:
         node_name = name or _get_func_name(f, "unnamed_node")
+
+        # 在装饰之前检测原始函数是否为异步函数
+        is_original_async = inspect.iscoroutinefunction(f)
 
         # 使用functools.reduce应用装饰器链
         decorators = [
@@ -829,11 +1098,11 @@ def node(
             ),
         ]
         if enable_retry:
-            decorators.append(retry_decorator(config=config, node_name=node_name))
+            decorators.append(retry_decorator(config=config, node_name=node_name))  # type: ignore[arg-type]
 
         decorated_func = functools.reduce(lambda func, deco: deco(func), decorators, f)
 
-        return Node(func=decorated_func, name=node_name)
+        return Node(func=decorated_func, name=node_name, is_async=is_original_async)
 
     # 支持两种调用方式：@node 和 @node(...)
     if func is None:

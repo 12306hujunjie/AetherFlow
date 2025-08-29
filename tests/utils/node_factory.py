@@ -471,6 +471,111 @@ class SimpleProcessor:
         )
 
 
+# 同步节点 - 供异步/同步混合测试复用
+@node
+def sync_subtract_5_node(value: int) -> int:
+    """同步节点：减5"""
+    return value - 5
+
+
+@node
+def sync_final_processing_node(value: int) -> str:
+    """同步节点：最终处理"""
+    return f"Final result: {value}"
+
+
+# 异步节点 - 供异步/同步混合测试复用
+@node
+async def async_add_10_node(value: int) -> int:
+    """异步节点：加10"""
+    import asyncio
+
+    await asyncio.sleep(0.01)  # 模拟异步操作
+    return value + 10
+
+
+@node
+async def async_multiply_2_node(value: int) -> int:
+    """异步节点：乘以2"""
+    import asyncio
+
+    await asyncio.sleep(0.01)  # 模拟异步操作
+    return value * 2
+
+
+@node
+async def async_subtract_5_node(value: int) -> int:
+    """异步节点：减5"""
+    import asyncio
+
+    await asyncio.sleep(0.01)  # 模拟异步操作
+    return value - 5
+
+
+@node
+async def async_divide_3_node(value: int) -> int:
+    """异步节点：除以3"""
+    import asyncio
+
+    await asyncio.sleep(0.01)  # 模拟异步操作
+    return value // 3
+
+
+@node
+async def async_final_processing_node(value: int) -> str:
+    """异步节点：最终处理"""
+    import asyncio
+
+    await asyncio.sleep(0.01)  # 模拟异步操作
+    return f"Async final result: {value}"
+
+
+@node
+async def async_aggregator_node(parallel_results: dict) -> str:
+    """异步聚合节点"""
+    import asyncio
+
+    await asyncio.sleep(0.01)  # 模拟异步操作
+    from src.aetherflow import ParallelResult
+
+    total = sum(
+        result.result
+        for result in parallel_results.values()
+        if isinstance(result, ParallelResult) and result.success
+    )
+    return f"Async aggregated: {total}"
+
+
+# 异步重试测试节点 - 复用于重试功能测试
+
+# 全局计数器，用于测试重试次数
+_async_retry_call_count = 0
+
+
+@node(retry_count=2, retry_delay=0.01)
+async def async_retry_success_node(value: int) -> int:
+    """异步重试节点：前2次失败，第3次成功"""
+    global _async_retry_call_count
+    _async_retry_call_count += 1
+    import asyncio
+
+    await asyncio.sleep(0.01)
+    if _async_retry_call_count < 3:
+        raise ValueError(f"Async attempt {_async_retry_call_count} failed")
+    result = value * 2
+    _async_retry_call_count = 0  # 重置计数器
+    return result
+
+
+@node(retry_count=2, retry_delay=0.01)
+async def async_always_fail_node(value: int) -> int:
+    """异步重试节点：总是失败"""
+    import asyncio
+
+    await asyncio.sleep(0.01)
+    raise ValueError(f"Async always fails with value: {value}")
+
+
 # composition测试专用节点（最小新增集合）
 @node
 def simple_error_node(x: int) -> int:
@@ -550,6 +655,16 @@ __all__ = [
     "create_failing_node",
     "create_slow_node",
     "SimpleProcessor",
+    # 同步节点 - 供异步/同步混合测试复用
+    "sync_subtract_5_node",
+    "sync_final_processing_node",
+    # 异步节点 - 供异步/同步混合测试复用
+    "async_add_10_node",
+    "async_multiply_2_node",
+    "async_subtract_5_node",
+    "async_divide_3_node",
+    "async_final_processing_node",
+    "async_aggregator_node",
     # composition测试专用节点（仅repeat测试使用）
     "simple_error_node",
     "intermittent_error_node",

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 test_retry_decorator.py - 测试重试装饰器功能
-包含：基本重试、异常类型过滤、指数退避、Node集成、@node装饰器集成等测试
+包含：基本重试、异常类型过滤、指数退避、Node集成、@node装饰器集成、异步重试等测试
 """
 
 import time
