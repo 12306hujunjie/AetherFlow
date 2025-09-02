@@ -1,516 +1,643 @@
-# AetherFlow - 智能流式数据处理框架技术文档
+# AetherFlow 技术文档
 
-## 概述
+现代化Python数据流处理框架，通过智能异步适配和声明式API，让复杂工作流构建变得简单优雅。
 
-AetherFlow 是一个现代化的 Python 数据流处理框架，专为构建可扩展、线程安全的数据处理管道而设计。通过流式接口（Fluent Interface）和智能依赖注入系统，让开发者能够以声明式的方式构建复杂的数据处理工作流。
+## 目录
 
-### 核心特性
+1. [快速开始](#快速开始)
+2. [核心功能](#核心功能)
+3. [完整示例](#完整示例)
+4. [最佳实践](#最佳实践)
+5. [API速查](#api速查)
 
-- 🔗 **声明式流程定义**: 通过链式 API 构建清晰的数据流
-- 🧵 **线程安全**: 基于 ThreadLocalSingleton 的状态隔离机制
-- 💉 **智能依赖注入**: 集成 dependency-injector 的 DI 系统
-- ⚡ **并行处理**: 支持扇出/扇入模式的并行工作流
-- 🔄 **自动重试**: 可配置的重试机制和异常处理
-- 🛡️ **类型安全**: 完整的类型注解和 Pydantic 验证
-
-### 环境要求
-
-- Python 3.10+
-- dependency-injector >= 4.48.1
-- pydantic >= 2.11.7
+---
 
 ## 快速开始
 
 ### 安装
 
 ```bash
-pip install dependency-injector pydantic
+# 使用PDM（推荐）
+pdm add aetherflow
+
+# 或使用pip
+pip install aetherflow
 ```
 
-### 第一个示例
+**环境要求**: Python 3.10+ | 核心依赖: `dependency-injector`, `pydantic`
+
+### 第一个工作流
+
+```python
+from aetherflow import node
+import asyncio
+
+@node
+def extract_data(source: str) -> dict:
+    return {"raw": f"data from {source}", "count": 100}
+
+@node
+async def transform_data(data: dict) -> dict:
+    await asyncio.sleep(0.1)  # 异步操作
+    return {"processed": data["raw"].upper(), "total": data["count"] * 2}
+
+@node
+def load_data(data: dict) -> str:
+    return f"✅ 处理完成: {data['processed']} (总计: {data['total']})"
+
+# 构建工作流 - 自动处理sync/async混合
+pipeline = extract_data.then(transform_data).then(load_data)
+
+# 执行
+async def main():
+    result = await pipeline("database")
+    print(result)  # ✅ 处理完成: DATA FROM DATABASE (总计: 200)
+
+asyncio.run(main())
+```
+
+### 核心概念
+
+- **@node装饰器**: 将函数转为可组合的处理单元
+- **智能异步**: 自动处理同步/异步函数混合调用
+- **fluent接口**: `.then()`, `.fan_out_to()`, `.fan_in()` 等链式调用
+- **并行处理**: 支持多种执行器的扇出/扇入模式
+- **重试机制**: 基于异常分类的智能重试
+- **状态管理**: 线程安全的依赖注入容器
+
+---
+
+## 核心功能
+
+### 1. 顺序连接 (`.then()`)
+
+**用途**: 将节点按顺序连接，前一个节点输出作为后一个节点输入。
 
 ```python
 from aetherflow import node
 
 @node
-def load_data(filename):
-    """加载数据文件"""
-    with open(filename, 'r') as f:
-        data = f.read().strip().split('\n')
-    return {'data': data, 'count': len(data)}
+def extract_data(source: str) -> dict:
+    return {"raw_data": f"data from {source}"}
 
 @node
-def filter_data(load_data, min_length=3):
-    """过滤数据"""
-    data = load_data['data']
-    filtered = [item for item in data if len(item) >= min_length]
-    return {
-        'filtered_data': filtered,
-        'original_count': load_data['count'],
-        'filtered_count': len(filtered)
-    }
+def transform_data(data: dict) -> dict:
+    return {"transformed": data["raw_data"].upper()}
 
-@node
-def save_results(filter_data, output_file):
-    """保存结果"""
-    with open(output_file, 'w') as f:
-        f.write('\n'.join(filter_data['filtered_data']))
-    return {
-        'saved_file': output_file,
-        'processed_items': filter_data['filtered_count'],
-        'success': True
-    }
-
-# 构建和执行管道
-pipeline = load_data.then(filter_data).then(save_results)
-result = pipeline.run({
-    'filename': 'input.txt',
-    'min_length': 3,
-    'output_file': 'output.txt'
-})
+# 构建ETL管道
+etl_pipeline = extract_data.then(transform_data)
+result = etl_pipeline("database")  # {"transformed": "DATA FROM DATABASE"}
 ```
 
-## 核心概念
+### 2. 并行扇出 (`.fan_out_to()`)
 
-### 1. 节点 (Node)
-
-节点是 AetherFlow 的基本执行单元，通过 [`@node`](src/aetherflow/__init__.py:699) 装饰器将普通函数转换为可链接的处理节点。
+**用途**: 将输出广播给多个并行节点执行。
 
 ```python
 @node
-def process_data(data: dict) -> dict:
-    """处理数据的节点"""
-    result = data['input'] * 2
-    return {'output': result}
+def source_data() -> dict:
+    return {"value": 10}
+
+@node
+def task_multiply(data: dict) -> int:
+    return data["value"] * 2
+
+@node
+def task_add(data: dict) -> int:
+    return data["value"] + 5
+
+# 并行执行
+parallel_flow = source_data.fan_out_to([task_multiply, task_add])
+results = parallel_flow()  # 返回ParallelResult字典
 ```
 
-### 2. 流式接口 (Fluent Interface)
+**执行器选择**:
+- `"auto"`: 智能选择（推荐）
+- `"async"`: 协程池，适合I/O密集任务
+- `"thread"`: 线程池，适合CPU密集任务
 
-通过方法链构建数据处理管道：
+### 3. 结果聚合 (`.fan_in()`)
 
-| 方法 | 功能 | 示例 |
-|------|------|------|
-| [`.then()`](src/aetherflow/__init__.py:302) | 顺序执行 | `node1.then(node2)` |
-| [`.fan_out_to()`](src/aetherflow/__init__.py:306) | 并行扇出 | `source.fan_out_to([task1, task2])` |
-| [`.fan_in()`](src/aetherflow/__init__.py:315) | 结果汇入 | `parallel_nodes.fan_in(aggregator)` |
-| [`.branch_on()`](src/aetherflow/__init__.py:329) | 条件分支 | `condition.branch_on({True: path_a})` |
-| [`.repeat()`](src/aetherflow/__init__.py:333) | 重复执行 | `processor.repeat(3)` |
+```python
+@node
+def aggregate_results(parallel_results: dict) -> dict:
+    successful = [r.result for r in parallel_results.values() if r.success]
+    return {"total": sum(successful), "count": len(successful)}
 
-### 3. 依赖注入
+# 扇出后聚合
+flow = source_data.fan_out_to([task_multiply, task_add]).fan_in(aggregate_results)
+result = flow()  # {"total": 35, "count": 2}
+```
 
-AetherFlow 集成了 [`BaseFlowContext`](src/aetherflow/__init__.py:230) 提供线程安全的状态管理：
+### 4. 条件分支 (`.branch_on()`)
+
+```python
+@node
+def evaluate_score(data: dict) -> str:
+    """评估分数，返回pass或fail"""
+    score = data["score"]
+    return "pass" if score >= 60 else "fail"
+
+@node
+def handle_pass(data: dict) -> dict:
+    """处理通过情况"""
+    return {"status": "通过", "score": data["score"]}
+
+@node
+def handle_fail(data: dict) -> dict:
+    """处理未通过情况"""
+    return {"status": "不通过", "action": "重考"}
+
+# 条件分支：基于evaluate_score的返回值选择分支
+grading_flow = evaluate_score.branch_on({
+    "pass": handle_pass,    # 当evaluate_score返回"pass"时执行
+    "fail": handle_fail     # 当evaluate_score返回"fail"时执行
+})
+
+# 使用示例
+result = grading_flow({"score": 75})  # {"status": "通过", "score": 75}
+```
+
+### 5. 重复执行 (`.repeat()`)
+
+```python
+@node
+def iterative_improve(data: dict) -> dict:
+    value = data.get("value", 0)
+    return {"value": value * 1.1 + 1}  # 每次增长10%+1
+
+# 重复5次
+iterative_flow = iterative_improve.repeat(5)
+result = iterative_flow({"value": 10})  # 经过5次迭代后的结果
+```
+
+### 6. 智能异步适配
+
+**核心价值**: 自动处理同步/异步函数混合，零配置。
+
+```python
+@node
+def sync_process(data: str) -> dict:
+    return {"result": data.upper()}
+
+@node
+async def async_fetch(data: dict) -> dict:
+    await asyncio.sleep(0.1)
+    return {"fetched": f"async_{data['result']}"}
+
+# 自动处理混合执行
+mixed_flow = sync_process.then(async_fetch)
+result = await mixed_flow("hello")  # 框架自动协调sync/async
+```
+
+### 7. 重试机制
+
+**智能重试**: 基于异常分类的差异化策略。
+
+```python
+from aetherflow import RetryConfig
+
+class TemporaryError(Exception):
+    def __init__(self, msg):
+        super().__init__(msg)
+        self.retryable = True  # 可重试
+
+@node(retry_config=RetryConfig(
+    retry_count=3,
+    retry_delay=1.0,
+    backoff_factor=2.0,  # 指数退避
+    exception_types=(ConnectionError, TemporaryError)
+))
+async def resilient_call(url: str) -> dict:
+    # 框架自动重试
+    return await fetch_data(url)
+```
+
+### 8. 状态管理
+
+**线程安全**: 支持依赖注入的状态管理。
 
 ```python
 from aetherflow import BaseFlowContext
 from dependency_injector.wiring import Provide
 
-@node
-def stateful_processor(data, state: dict = Provide[BaseFlowContext.state]):
-    """带状态的处理节点"""
-    state['processed_count'] = state.get('processed_count', 0) + 1
-    result = data['value'] * 2
-    return {'result': result, 'count': state['processed_count']}
-
-# 配置依赖注入
 container = BaseFlowContext()
 container.wire(modules=[__name__])
-```
-
-## 核心 API 参考
-
-### [`@node` 装饰器](src/aetherflow/__init__.py:699)
-
-将函数转换为 Node 实例，支持重试机制和依赖注入。
-
-```python
-@node(
-    name=None,                    # 节点名称，用于调试
-    retry_count=3,               # 最大重试次数
-    retry_delay=1.0,             # 重试间隔（秒）
-    exception_types=(Exception,), # 需要重试的异常类型
-    backoff_factor=1.0,          # 退避因子
-    max_delay=60.0,              # 最大重试延迟
-    enable_retry=True            # 是否启用重试
-)
-def my_function(data):
-    pass
-```
-
-### [`Node` 类](src/aetherflow/__init__.py:240)
-
-节点的核心实现，支持各种组合模式。
-
-**主要方法：**
-
-- [`then(next_node)`](src/aetherflow/__init__.py:302): 顺序链接节点
-- [`fan_out_to(nodes, executor="thread")`](src/aetherflow/__init__.py:306): 并行分发到多个节点
-- [`fan_in(aggregator)`](src/aetherflow/__init__.py:315): 聚合并行结果
-- [`branch_on(conditions)`](src/aetherflow/__init__.py:329): 条件分支
-- [`repeat(times, stop_on_error=False)`](src/aetherflow/__init__.py:333): 重复执行
-
-### [`BaseFlowContext` 类](src/aetherflow/__init__.py:230)
-
-依赖注入容器，提供线程安全的状态管理。
-
-```python
-class BaseFlowContext(containers.DeclarativeContainer):
-    state = providers.ThreadLocalSingleton(dict)        # 线程本地状态
-    context = providers.ThreadLocalSingleton(dict)      # 线程本地上下文
-    shared_data = providers.Singleton(dict)             # 全局共享数据
-```
-
-### 异常类型
-
-AetherFlow 提供完整的异常体系：
-
-- [`AetherFlowException`](src/aetherflow/__init__.py:31): 基础异常类
-- [`NodeExecutionException`](src/aetherflow/__init__.py:40): 节点执行异常
-- [`NodeRetryExhaustedException`](src/aetherflow/__init__.py:68): 重试耗尽异常
-- [`NodeTimeoutException`](src/aetherflow/__init__.py:54): 超时异常
-
-## 高级功能
-
-### 1. 并行处理
-
-#### 扇出/扇入模式
-
-```python
-@node
-def data_source():
-    return {'numbers': list(range(100))}
 
 @node
-def calculate_sum(data):
-    return {'sum': sum(data['numbers'])}
-
-@node
-def calculate_average(data):
-    numbers = data['numbers']
-    return {'average': sum(numbers) / len(numbers)}
-
-@node
-def combine_results(parallel_results):
-    """聚合并行处理结果"""
-    sum_result = parallel_results['calculate_sum']['sum']
-    avg_result = parallel_results['calculate_average']['average']
-    return {'sum': sum_result, 'average': avg_result}
-
-# 构建并行管道
-pipeline = (data_source
-    .fan_out_to([calculate_sum, calculate_average])
-    .fan_in(combine_results))
-
-result = pipeline.run({})
+def stateful_processor(
+    data: dict,
+    state: dict = Provide[container.state]  # 线程本地状态
+) -> dict:
+    state['count'] = state.get('count', 0) + 1
+    return {"processed": data, "count": state['count']}
 ```
 
-#### 执行器配置
+### 9. 组合使用
+
+所有核心功能可自由组合构建复杂流程：
 
 ```python
-# 线程池执行器（适合 I/O 密集型）
-thread_pipeline = source.fan_out_to(
-    [task1, task2, task3],
-    executor="thread",
-    max_workers=4
-)
-
-# 进程池执行器（适合 CPU 密集型）
-process_pipeline = source.fan_out_to(
-    [task1, task2, task3],
-    executor="process",
-    max_workers=2
+# 完整的数据处理流水线
+complex_pipeline = (
+    extract_data                     # 提取数据
+    .then(evaluate_score)           # 评估条件
+    .branch_on({                    # 条件分支
+        "pass": (
+            handle_pass             # 处理通过
+            .fan_out_to([           # 并行操作
+                save_record,
+                send_notification
+            ])
+        ),
+        "fail": handle_fail         # 处理失败
+    })
 )
 ```
 
-### 2. 重试机制
+---
 
-#### 基本重试配置
+## 完整示例
+
+### ETL数据管道
+
+演示异步提取、同步转换、条件分支的混合流程：
 
 ```python
-@node(
-    retry_count=5,
-    retry_delay=2.0,
-    backoff_factor=2.0,       # 指数退避
-    max_delay=30.0,
-    exception_types=(ValueError, ConnectionError)
+from aetherflow import node
+import asyncio
+
+@node
+async def extract_data(source: str) -> list:
+    """异步数据提取"""
+    await asyncio.sleep(0.1)
+    return [{"id": 1, "value": "100"}, {"id": 2, "value": "invalid"}]
+
+@node
+def transform_data(data: list) -> list:
+    """同步数据转换"""
+    return [{"id": item["id"], "processed": float(item["value"])}
+            for item in data if item["value"].isdigit()]
+
+@node
+def check_quality(data: list) -> str:
+    """质量检查，返回质量等级"""
+    return "high" if len(data) > 0 else "low"
+
+@node
+async def load_high_quality(data: list) -> dict:
+    """处理高质量数据"""
+    await asyncio.sleep(0.1)
+    return {"loaded": len(data), "status": "success"}
+
+@node
+def handle_low_quality(data: list) -> dict:
+    """处理低质量数据"""
+    return {"loaded": 0, "status": "rejected", "reason": "low quality"}
+
+# 使用状态管理保持数据流
+from aetherflow import BaseFlowContext
+from dependency_injector.wiring import Provide
+
+@node
+def store_data(data: list, state: dict = Provide[BaseFlowContext.state]) -> str:
+    """存储数据并返回质量评估"""
+    state["processed_data"] = data
+    return "high" if len(data) > 0 else "low"
+
+@node
+async def load_stored_data(quality: str, state: dict = Provide[BaseFlowContext.state]) -> dict:
+    """从状态加载数据进行处理"""
+    data = state["processed_data"]
+    await asyncio.sleep(0.1)
+    return {"loaded": len(data), "status": "success"}
+
+@node
+def reject_stored_data(quality: str, state: dict = Provide[BaseFlowContext.state]) -> dict:
+    """拒绝低质量数据"""
+    return {"loaded": 0, "status": "rejected", "reason": "low quality"}
+
+# ETL管道：异步→同步→条件分支→异步
+etl_flow = (
+    extract_data
+    .then(transform_data)
+    .then(store_data)
+    .branch_on({
+        "high": load_stored_data,
+        "low": reject_stored_data
+    })
 )
-def network_request(data):
-    """网络请求节点"""
-    import requests
-    response = requests.get(data['url'])
-    return {'data': response.json()}
+
+# 执行示例
+async def run_etl():
+    # 初始化依赖注入容器
+    container = BaseFlowContext()
+    container.wire(modules=[__name__])
+
+    result = await etl_flow("database")
+    print(result)  # {"loaded": 1, "status": "success"}
+
+asyncio.run(run_etl())
 ```
 
-#### [`RetryConfig` 类](src/aetherflow/__init__.py:105)
-
-```python
-from aetherflow import RetryConfig
-
-config = RetryConfig(
-    retry_count=3,
-    retry_delay=1.0,
-    exception_types=(ValueError,),
-    backoff_factor=2.0,
-    max_delay=60.0
-)
-
-# 检查是否应该重试特定异常
-should_retry = config.should_retry(ValueError("test"))
-
-# 计算重试延迟（支持指数退避）
-delay = config.get_delay(attempt_number)
-```
-
-### 3. 状态管理
-
-#### 线程隔离模式（推荐）
-
-```python
-from dependency_injector import providers
-
-class IsolatedContext(BaseFlowContext):
-    """每个线程独立状态"""
-    state = providers.ThreadLocalSingleton(dict)
-    service = providers.ThreadLocalSingleton(MyService)
-```
-
-#### 共享状态模式
-
-```python
-import threading
-
-class SharedStateService:
-    def __init__(self):
-        self.counter = 0
-        self.lock = threading.Lock()
-
-    def increment(self):
-        with self.lock:
-            self.counter += 1
-            return self.counter
-
-class SharedContext(BaseFlowContext):
-    """线程间协调"""
-    shared_service = providers.Singleton(SharedStateService)
-```
-
-### 4. 条件分支
+### 并发处理示例
 
 ```python
 @node
-def check_condition(data):
-    return data['value'] > 10
+def generate_tasks() -> list:
+    """生成任务列表"""
+    return [{"task_id": i, "data": f"item_{i}"} for i in range(5)]
 
 @node
-def high_value_processor(data):
-    return {'result': 'high', 'value': data['value']}
+def process_task(task: dict) -> dict:
+    """处理单个任务"""
+    import time
+    time.sleep(0.1)  # 模拟处理时间
+    return {"task_id": task["task_id"], "result": task["data"].upper()}
 
 @node
-def low_value_processor(data):
-    return {'result': 'low', 'value': data['value']}
-
-# 条件分支管道
-pipeline = check_condition.branch_on({
-    True: high_value_processor,
-    False: low_value_processor
-})
-```
-
-### 5. 循环处理
-
-```python
-@node
-def increment_processor(data):
-    current = data.get('value', 0)
-    return {'value': current + 1}
-
-# 重复执行 5 次
-repeated_pipeline = increment_processor.repeat(5)
-result = repeated_pipeline.run({'value': 0})  # {'value': 5}
-
-# 遇到错误停止
-safe_pipeline = increment_processor.repeat(3, stop_on_error=True)
-```
-
-## 并行结果模型
-
-[`ParallelResult`](src/aetherflow/__init__.py:16) 数据类用于封装并行执行的结果：
-
-```python
-@dataclass
-class ParallelResult:
-    node_name: str                # 节点名称
-    success: bool                 # 执行是否成功
-    result: Any = None           # 执行结果
-    error: str | None = None     # 错误信息
-    error_traceback: str | None = None  # 错误堆栈
-    execution_time: float | None = None # 执行时间
-```
-
-并行执行的返回格式：
-
-```python
-{
-    "node_name": {
-        "node_name": "节点名称",
-        "success": True/False,
-        "result": "执行结果或None",
-        "error": "错误信息或None",
-        "error_traceback": "错误堆栈或None",
-        "execution_time": "执行时间（秒）"
+def collect_results(results: dict) -> dict:
+    """收集处理结果"""
+    successful = [r.result for r in results.values() if r.success]
+    return {
+        "total_tasks": len(results),
+        "successful": len(successful),
+        "results": successful
     }
-}
+
+# 并发处理流程
+concurrent_flow = (
+    generate_tasks
+    .fan_out_to([process_task] * 3, executor="thread")  # 并行处理
+    .fan_in(collect_results)
+)
+
+result = concurrent_flow()
+print(f"处理了 {result['total_tasks']} 个任务，成功 {result['successful']} 个")
 ```
+
+---
 
 ## 最佳实践
 
-### 1. 节点设计原则
+### 节点设计原则
 
-- **单一职责**: 每个节点只负责一个特定的处理任务
-- **纯函数**: 尽量避免副作用，便于测试和调试
-- **明确接口**: 使用类型注解定义清晰的输入输出
+#### 1. 单一职责
+每个节点只负责一个明确的处理任务。
 
 ```python
+# ✅ 好的设计
 @node
-def clean_text(data: dict) -> dict:
-    """清理文本数据"""
-    text = data['text'].strip().lower()
-    words = text.split()
-    cleaned_words = [word for word in words if word.isalpha()]
-    return {
-        'original_text': data['text'],
-        'cleaned_text': ' '.join(cleaned_words),
-        'word_count': len(cleaned_words)
-    }
+def extract_user_data(user_id: int) -> dict:
+    """只负责提取用户数据"""
+    return get_user_from_db(user_id)
+
+@node
+def validate_user_data(user_data: dict) -> dict:
+    """只负责验证用户数据"""
+    if not user_data.get("email"):
+        raise ValueError("Email is required")
+    return user_data
+
+# ❌ 避免的设计
+@node
+def extract_and_validate_user(user_id: int) -> dict:
+    """职责过多，难以测试和重用"""
+    user_data = get_user_from_db(user_id)
+    if not user_data.get("email"):
+        raise ValueError("Email is required")
+    return user_data
 ```
 
-### 2. 错误处理策略
+#### 2. 类型注解
+始终为节点函数提供完整的类型注解。
 
 ```python
-@node(
-    retry_count=3,
-    retry_delay=1.0,
-    exception_types=(requests.RequestException,),
-    enable_retry=True
+from typing import List, Dict
+from pydantic import BaseModel
+
+class UserData(BaseModel):
+    id: int
+    name: str
+    email: str
+
+@node
+def process_users(user_ids: List[int]) -> List[UserData]:
+    """处理用户列表，返回用户数据"""
+    return [get_user_data(uid) for uid in user_ids]
+```
+
+#### 3. 错误处理
+合理设计异常处理策略。
+
+```python
+class DataValidationError(Exception):
+    """数据验证错误（可重试）"""
+    def __init__(self, message: str):
+        super().__init__(message)
+        self.retryable = True
+
+@node(retry_config=RetryConfig(retry_count=3))
+def validate_and_process(data: dict) -> dict:
+    if not data:
+        raise ValueError("Data cannot be empty")  # 不可重试
+
+    if "required_field" not in data:
+        raise DataValidationError("Missing required field")  # 可重试
+
+    return {"processed": data}
+```
+
+### 性能优化
+
+#### 1. 选择合适的执行器
+
+```python
+# I/O密集型任务使用异步执行器
+io_flow = fetch_data.fan_out_to(
+    targets=[fetch_user, fetch_orders, fetch_products],
+    executor="async"
 )
-def robust_api_call(data):
-    """健壮的 API 调用"""
-    try:
-        response = requests.get(data['url'], timeout=10)
-        response.raise_for_status()
-        return {'success': True, 'data': response.json()}
-    except requests.Timeout:
-        raise NodeTimeoutException("API调用超时", timeout_seconds=10)
-    except requests.RequestException as e:
-        raise NodeExecutionException("API调用失败", original_exception=e)
+
+# CPU密集型任务使用线程执行器
+cpu_flow = process_data.fan_out_to(
+    targets=[compute_stats, generate_report, compress_data],
+    executor="thread"
+)
+
+# 不确定时使用自动选择
+auto_flow = mixed_task.fan_out_to(
+    targets=[task1, task2, task3],
+    executor="auto"
+)
 ```
 
-### 3. 状态使用指导
+#### 2. 批处理优化
 
 ```python
 @node
-def process_with_state(data, state: dict = Provide[BaseFlowContext.state]):
-    """正确使用状态的示例"""
-    # 读取状态
-    processed_count = state.get('processed_count', 0)
-
-    # 处理数据
-    result = process_data(data)
-
-    # 更新状态
-    state['processed_count'] = processed_count + 1
-    state['last_result'] = result
-
-    return result
+def batch_process_users(user_ids: List[int], batch_size: int = 100) -> List[dict]:
+    """批量处理用户数据"""
+    results = []
+    for i in range(0, len(user_ids), batch_size):
+        batch = user_ids[i:i + batch_size]
+        batch_results = process_user_batch(batch)
+        results.extend(batch_results)
+    return results
 ```
 
-### 4. 并发模式选择
+### 调试技巧
 
-**选择线程隔离模式的场景：**
-- 独立任务处理
-- 简单的并发需求
-- 新手开发者
-- 高并发场景
-
-**选择共享状态模式的场景：**
-- 需要线程间协调
-- 内存使用敏感
-- 复杂的状态共享需求
-
-## 使用场景
-
-### 1. ETL 数据处理
+#### 1. 节点命名
 
 ```python
-etl_pipeline = (extract_from_database
-    .then(transform_data)
-    .then(validate_data)
-    .then(load_to_warehouse))
+@node(name="user_data_extractor")
+def extract_user_data(user_id: int) -> dict:
+    return get_user_from_db(user_id)
 ```
 
-### 2. 机器学习推理
-
-```python
-ml_pipeline = (preprocess_data
-    .fan_out_to([model_a, model_b, model_c])
-    .fan_in(ensemble_predictions)
-    .then(postprocess_results))
-```
-
-### 3. 实时数据处理
-
-```python
-realtime_pipeline = (receive_events
-    .fan_out_to([fraud_detection, sentiment_analysis])
-    .fan_in(generate_alerts)
-    .then(send_notifications))
-```
-
-### 4. 批量文件处理
-
-```python
-batch_pipeline = (scan_directory
-    .fan_out_to([process_images, extract_metadata])
-    .fan_in(combine_results)
-    .then(save_manifest))
-```
-
-## 性能和监控
-
-### 性能特点
-
-- 线程隔离模式在高并发下性能优势明显（+38% @ 16线程）
-- 智能重试机制减少临时故障影响
-- 类型验证开销最小化
-
-### 调试和日志
+#### 2. 日志记录
 
 ```python
 import logging
 
-# 启用 AetherFlow 日志
-logging.basicConfig(level=logging.DEBUG)
-logger = logging.getLogger('aetherflow')
+logger = logging.getLogger(__name__)
 
-@node(name="debug_processor")  # 指定节点名称便于调试
-def debug_node(data):
-    logger.info(f"处理数据: {data}")
-    return process_data(data)
+@node
+def logged_processor(data: dict) -> dict:
+    logger.info(f"Processing data: {data.get('id')}")
+    try:
+        result = process_data(data)
+        logger.info(f"Successfully processed: {data.get('id')}")
+        return result
+    except Exception as e:
+        logger.error(f"Failed to process {data.get('id')}: {e}")
+        raise
 ```
 
-### 监控建议
+#### 3. 常见问题
 
-- 使用 `ParallelResult.execution_time` 监控节点性能
-- 通过状态记录关键指标
-- 利用异常信息进行问题诊断
+**异步/同步混合执行问题**:
+```python
+# ❌ 错误：在事件循环中创建新循环
+def sync_wrapper():
+    return asyncio.run(async_function())
 
-## 总结
+# ✅ 正确：让AetherFlow自动处理
+flow = sync_node.then(async_node)
+```
 
-AetherFlow 提供了一个强大而灵活的数据流处理框架，通过声明式的 API 和智能的状态管理，让开发者能够构建从简单到复杂的各种数据处理管道。关键优势包括：
+**重试机制不生效**:
+```python
+# 确保异常类型正确配置
+retry_config = RetryConfig(
+    retry_count=3,
+    exception_types=(ConnectionError, TimeoutError, YourCustomError)
+)
 
-- **易用性**: 流式接口让代码清晰易懂
-- **可靠性**: 完善的重试和异常处理机制
-- **性能**: 线程安全的并发处理能力
-- **扩展性**: 灵活的依赖注入和状态管理
-- **类型安全**: 完整的类型注解支持
+# 或标记自定义异常为可重试
+class YourCustomError(Exception):
+    def __init__(self, message):
+        super().__init__(message)
+        self.retryable = True  # 重要：标记为可重试
+```
 
-无论是简单的数据转换还是复杂的并行处理工作流，AetherFlow 都能提供清晰、可维护的解决方案。
+---
+
+## API速查
+
+### @node 装饰器
+
+```python
+@node(
+    name: Optional[str] = None,
+    retry_config: Optional[RetryConfig] = None
+)
+def function_name(...):
+    pass
+```
+
+- `name`: 节点名称（可选）
+- `retry_config`: 重试配置对象
+
+### Node 类方法
+
+#### `then(next_node: Node) -> Node`
+顺序连接节点。
+
+#### `fan_out_to(targets: List[Node], executor: str = "async") -> Node`
+并行扇出到多个目标节点。
+
+- `targets`: 目标节点列表
+- `executor`: 执行器类型（"async", "thread", "auto"）
+
+#### `fan_in(aggregator: Node) -> Node`
+聚合并行结果。
+
+- `aggregator`: 聚合器节点，接收 `ParallelResult` 参数
+
+#### `branch_on(conditions: Dict[Any, Node]) -> Node`
+条件分支执行。
+
+- `conditions`: 条件映射字典
+
+#### `repeat(times: int, stop_on_error: bool = False) -> Node`
+重复执行节点。
+
+- `times`: 重复次数
+- `stop_on_error`: 遇到错误时是否停止
+
+### RetryConfig 类
+
+```python
+RetryConfig(
+    retry_count: int = 3,
+    retry_delay: float = 1.0,
+    exception_types: Tuple[Type[Exception], ...] = (Exception,),
+    backoff_factor: float = 2.0,
+    max_delay: float = 60.0
+)
+```
+
+- `retry_count`: 最大重试次数
+- `retry_delay`: 初始重试延迟（秒）
+- `exception_types`: 可重试的异常类型元组
+- `backoff_factor`: 指数退避因子
+- `max_delay`: 最大延迟时间（秒）
+
+### BaseFlowContext 类
+
+流执行上下文，提供依赖注入容器。
+
+```python
+container = BaseFlowContext()
+container.wire(modules=[__name__])
+```
+
+### ParallelResult 类
+
+并行执行结果的容器类，类似字典接口。
+
+```python
+result = ParallelResult({"task1": value1, "task2": value2})
+print(result["task1"])  # 访问特定任务结果
+print(list(result.values()))  # 获取所有结果值
+```
+
+### 异常类
+
+#### AetherFlowException
+框架基础异常类。
+
+```python
+class AetherFlowException(Exception):
+    def __init__(self, message: str, node_name: str = None, context: dict = None):
+        self.message = message
+        self.node_name = node_name
+        self.context = context or {}
+        self.retryable = False  # 默认不可重试
+```
+
+---
+
+**本文档涵盖了AetherFlow的完整功能和最佳实践。如需更多信息，请参考源代码或提交Issue。**
