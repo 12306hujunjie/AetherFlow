@@ -10,8 +10,6 @@ from unittest.mock import patch
 import pytest
 
 from src.aetherflow import (
-    NodeExecutionException,
-    NodeRetryExhaustedException,
     RetryConfig,
     node,
 )
@@ -59,7 +57,12 @@ class TestRetryDecorator:
         """测试重试后成功的情况"""
         call_count = 0
 
-        @node(retry_count=3, retry_delay=0.01, exception_types=(ValueError,))
+        @node(
+            retry_count=3,
+            retry_delay=0.01,
+            exception_types=(ValueError,),
+            enable_retry=True,
+        )
         def flaky_function(x):
             nonlocal call_count
             call_count += 1
@@ -80,20 +83,18 @@ class TestRetryDecorator:
             retry_delay=0.01,
             name="test_node",
             exception_types=(ValueError,),
+            enable_retry=True,
         )
         def always_fail_function(x):
             nonlocal call_count
             call_count += 1
             raise ValueError(f"Attempt {call_count} failed")
 
-        with pytest.raises(NodeRetryExhaustedException) as exc_info:
+        with pytest.raises(ValueError) as exc_info:
             always_fail_function(5)
 
         assert call_count == 3  # 初始尝试 + 2次重试
-        assert "test_node" in str(exc_info.value)
-        assert "重试次数耗尽" in str(exc_info.value)
-        assert exc_info.value.retry_count == 2
-        assert isinstance(exc_info.value.last_exception, ValueError)
+        assert "Attempt 3 failed" in str(exc_info.value)
 
     def test_retry_decorator_non_retryable_exception(self):
         """测试不可重试异常类型"""
@@ -104,6 +105,7 @@ class TestRetryDecorator:
             retry_delay=0.01,
             exception_types=(ValueError,),  # 只重试ValueError
             name="test_node",
+            enable_retry=True,
         )
         def mixed_exception_function(x):
             nonlocal call_count
@@ -112,12 +114,11 @@ class TestRetryDecorator:
                 raise RuntimeError("Non-retryable error")  # 不可重试
             raise ValueError("Retryable error")
 
-        with pytest.raises(NodeExecutionException) as exc_info:
+        with pytest.raises(RuntimeError) as exc_info:
             mixed_exception_function(5)
 
         assert call_count == 1  # 只调用一次
-        assert "不支持重试" in str(exc_info.value)
-        assert isinstance(exc_info.value.original_exception, RuntimeError)
+        assert "Non-retryable error" in str(exc_info.value)
 
     def test_retry_decorator_backoff(self):
         """测试指数退避功能"""
@@ -129,6 +130,7 @@ class TestRetryDecorator:
             backoff_factor=2.0,
             name="backoff_test",
             exception_types=(ValueError,),
+            enable_retry=True,
         )
         def backoff_function():
             call_times.append(time.time())
@@ -154,10 +156,10 @@ class TestNodeIntegration:
     """Node类重试集成测试"""
 
     def test_node_default_retry_enabled(self):
-        """测试Node默认启用重试"""
+        """测试Node显式启用重试"""
         call_count = 0
 
-        @node
+        @node(enable_retry=True)
         def flaky_func(x):
             nonlocal call_count
             call_count += 1
@@ -174,7 +176,12 @@ class TestNodeIntegration:
         """测试Node自定义重试配置"""
         call_count = 0
 
-        @node(retry_count=5, retry_delay=0.01, exception_types=(ValueError,))
+        @node(
+            retry_count=5,
+            retry_delay=0.01,
+            exception_types=(ValueError,),
+            enable_retry=True,
+        )
         def flaky_func(x):
             nonlocal call_count
             call_count += 1
@@ -206,7 +213,7 @@ class TestNodeIntegration:
         call_count_1 = 0
         call_count_2 = 0
 
-        @node(retry_delay=0.01)
+        @node(retry_delay=0.01, enable_retry=True)
         def flaky_func_1(x):
             nonlocal call_count_1
             call_count_1 += 1
@@ -214,7 +221,7 @@ class TestNodeIntegration:
                 raise ConnectionError("Node1 first attempt failed")
             return x * 2
 
-        @node(retry_delay=0.01)
+        @node(retry_delay=0.01, enable_retry=True)
         def flaky_func_2(x):
             nonlocal call_count_2
             call_count_2 += 1
@@ -234,10 +241,10 @@ class TestNodeDecoratorIntegration:
     """@node装饰器重试集成测试"""
 
     def test_node_decorator_default_retry(self):
-        """测试@node装饰器默认重试"""
+        """测试@node装饰器显式启用重试"""
         call_count = 0
 
-        @node
+        @node(enable_retry=True)
         def flaky_decorated_func(x: int) -> int:
             nonlocal call_count
             call_count += 1
@@ -257,6 +264,7 @@ class TestNodeDecoratorIntegration:
             retry_count=5,
             retry_delay=0.01,
             exception_types=(ConnectionError, TypeError),
+            enable_retry=True,
         )
         def custom_retry_func(x: int) -> int:
             nonlocal call_count
@@ -289,7 +297,7 @@ class TestNodeDecoratorIntegration:
         call_count_a = 0
         call_count_b = 0
 
-        @node(retry_count=2, retry_delay=0.01)
+        @node(retry_count=2, retry_delay=0.01, enable_retry=True)
         def func_a(x: int) -> int:
             nonlocal call_count_a
             call_count_a += 1
@@ -297,7 +305,12 @@ class TestNodeDecoratorIntegration:
                 raise ConnectionError("Func A failed")
             return x * 2
 
-        @node(retry_count=4, retry_delay=0.01, exception_types=(ConnectionError,))
+        @node(
+            retry_count=4,
+            retry_delay=0.01,
+            exception_types=(ConnectionError,),
+            enable_retry=True,
+        )
         def func_b(x: int) -> int:
             nonlocal call_count_b
             call_count_b += 1
@@ -326,6 +339,7 @@ class TestRetryLogging:
             retry_delay=0.01,
             name="log_test_node",
             exception_types=(ValueError,),
+            enable_retry=True,
         )
         def logging_func(x):
             nonlocal call_count

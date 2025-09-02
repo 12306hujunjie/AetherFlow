@@ -552,7 +552,7 @@ async def async_aggregator_node(parallel_results: dict) -> str:
 _async_retry_call_count = 0
 
 
-@node(retry_count=2, retry_delay=0.01)
+@node(retry_count=2, retry_delay=0.01, enable_retry=True)
 async def async_retry_success_node(value: int) -> int:
     """异步重试节点：前2次失败，第3次成功"""
     global _async_retry_call_count
@@ -567,7 +567,7 @@ async def async_retry_success_node(value: int) -> int:
     return result
 
 
-@node(retry_count=2, retry_delay=0.01)
+@node(retry_count=2, retry_delay=0.01, enable_retry=True)
 async def async_always_fail_node(value: int) -> int:
     """异步重试节点：总是失败"""
     import asyncio
