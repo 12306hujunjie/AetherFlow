@@ -4,254 +4,173 @@
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Tests](https://img.shields.io/badge/tests-passing-brightgreen.svg)](#测试)
 
-一个现代化的 Python 数据流处理框架，专为构建可扩展、线程安全的数据处理管道而设计。通过流式接口（Fluent Interface）和智能依赖注入系统，让开发者能够以声明式的方式构建复杂的数据处理工作流。
+**AetherFlow 通过智能抽象让数据流处理回归业务本质：专注逻辑表达，框架处理执行细节。**
 
-## 🌟 核心特性
-
-- 🔗 **声明式流程定义**: 通过链式 API 构建清晰的数据流
-- 🧵 **线程安全**: 基于 ThreadLocalSingleton 的状态隔离机制
-- 💉 **智能依赖注入**: 集成 dependency-injector 的 DI 系统
-- ⚡ **并行处理**: 支持扇出/扇入模式的并行工作流
-- 🔄 **自动重试**: 可配置的重试机制和异常处理
-- 🛡️ **类型安全**: 完整的类型注解和 Pydantic 验证
+- 🎯 **声明式工作流**：用方法链表达数据处理逻辑，代码即业务流程
+- 🤖 **智能执行引擎**：自动处理async/sync混合执行，无需手动协调
+- 🔗 **函数式组合**：@node装饰器让任何函数变成可组合节点
+- 🛡️ **企业级特性**：内置重试机制、依赖注入、基于pydantic的类型验证
+- 📊 **结果跟踪**：ParallelResult类提供详细的执行状态和错误信息
 
 ## 🚀 快速开始
 
-**开始构建您的高性能数据处理系统！** 🚀
-
 ```bash
-# 安装依赖
-pip install aetherflow
+pip install aetherflow  # 或 pdm add aetherflow
 ```
-# 运行第一个示例
-```python
-from aetherflow import node
-from pydantic import BaseModel
-
-class SumResult(BaseModel):
-    sum: int
-
-class AverageResult(BaseModel):
-    average: float
-
-@node
-def data_source(x: int, y: str):
-    return {'numbers': list(range(x)), 'name': y}
-
-@node
-def calculate_sum(data: dict) -> SumResult:
-    return SumResult(**{'sum': sum(data['numbers'])})
-
-@node
-def calculate_average(data: dict) -> AverageResult:
-    numbers = data["numbers"]
-    return AverageResult(**{'average': sum(numbers) / len(numbers)})
-
-@node
-def combine_results(parallel_results):
-    """聚合并行处理结果"""
-
-    sum_result = parallel_results['calculate_sum'].result
-    avg_result = parallel_results['calculate_average'].result
-    return True if sum_result.sum == avg_result.average else False
-
-@node
-def condition1():
-    return True
-
-@node
-def condition2():
-    return False
-
-@node
-def then_node(condition: bool) -> str:
-    return "condition1" if condition else "condition2"
-
-# 构建flow
-flow = (data_source
-    .fan_out_to([calculate_sum, calculate_average])
-    .fan_in(combine_results))
-then_flow = flow.branch_on({True: condition1, False: condition2}).then(then_node)
-
-# average -> 5.0, sum -> 55, result -> False
-result = flow(11, "2")
-# condition2
-then_result = then_flow(11, "2")
-
-@node
-def repeat_node(x: int) -> int:
-    return x + 1
-
-
-repeat_flow = repeat_node.repeat(3)
-repeat_result = repeat_flow(1)
-print(repeat_result)
-# 4
-```
-
-## ⚡ 核心概念
-
-### 节点 (Node)
-
-节点是 AetherFlow 的基本执行单元，通过 [`@node`](src/aetherflow/__init__.py:699) 装饰器将普通函数转换为可链接的处理节点。
-
-### 流式接口 (Fluent Interface)
-
-通过方法链构建数据处理管道：
-
-| 方法 | 功能 | 示例 |
-|------|------|------|
-| `.then()` | 顺序执行 | `node1.then(node2)` |
-| `.fan_out_to()` | 并行扇出 | `source.fan_out_to([task1, task2])` |
-| `.fan_in()` | 结果汇入 | `parallel_nodes.fan_in(aggregator)` |
-| `.branch_on()` | 条件分支 | `condition.branch_on({True: path_a})` |
-| `.repeat()` | 重复执行 | `processor.repeat(3)` |
-
-### 依赖注入
-
-AetherFlow 集成了线程安全的状态管理：
-
-```python
-from aetherflow import BaseFlowContext
-from dependency_injector.wiring import Provide
-
-@node
-def stateful_processor(data, state: dict = Provide[BaseFlowContext.state]):
-    """带状态的处理节点"""
-    state['processed_count'] = state.get('processed_count', 0) + 1
-    result = data['value'] * 2
-    return {'result': result, 'count': state['processed_count']}
-
-# 配置依赖注入
-container = BaseFlowContext()
-container.wire(modules=[__name__])
-```
-
-## 🏗️ 高级功能
-
-### 并行处理
 
 ```python
 from aetherflow import node
-@node
-def data_source(x: int):
-    return {'numbers': list(range(x))}
 
 @node
-def calculate_sum(data):
-    return {'sum': sum(data['numbers'])}
+def double(x: int) -> int: return x * 2
 
 @node
-def calculate_average(data):
-    numbers = data['numbers']
-    return {'average': sum(numbers) / len(numbers)}
+def add_ten(x: int) -> int: return x + 10
 
-@node
-def combine_results(parallel_results):
-    """聚合并行处理结果"""
-    sum_result = parallel_results['calculate_sum']['sum']
-    avg_result = parallel_results['calculate_average']['average']
-    return {'sum': sum_result, 'average': avg_result}
-
-# 构建并行管道
-pipeline = (data_source
-    .fan_out_to([calculate_sum, calculate_average])
-    .fan_in(combine_results))
-
-result = pipeline.run(1)
+# 链式数据流处理 - 框架核心价值
+result = double.then(add_ten)(5)  # 20
 ```
 
-### 重试机制
+## 📖 核心概念
+
+- **@node装饰器** - 将函数转为可组合的数据处理单元
+- **链式调用** - `.then()`, `.fan_out_to()`, `.fan_in()`, `.branch_on()` 构建数据流
+- **智能执行** - 自动处理同步/异步函数混合，无需手动协调
+- **结果跟踪** - `ParallelResult` 提供并行执行的详细状态信息
+
+| 方法 | 功能 | 用法示例 |
+|------|------|----------|
+| `.then(node)` | 顺序连接节点 | `a.then(b)(data)` |
+| `.fan_out_to([nodes])` | 并行分发到多个节点 | `a.fan_out_to([b, c])()` |
+| `.fan_in(aggregator)` | 聚合并行结果 | `flow.fan_in(merge_func)()` |
+| `.fan_out_in([nodes], agg)` | 扇出后立即聚合 | `a.fan_out_in([b, c], merge)()` |
+| `.branch_on({key: node})` | 条件分支执行 | `a.branch_on({"high": b, "low": c})()` |
+| `.repeat(times)` | 重复执行节点 | `a.repeat(3)(data)` |
+
+**ParallelResult结构**: `{'node_name': ParallelResult(success=bool, result=value, execution_time=float)}`
+
+## 🎯 完整示例
 
 ```python
-@node(
-    retry_count=5,
-    retry_delay=2.0,
-    backoff_factor=2.0,       # 指数退避
-    max_delay=30.0,
-    exception_types=(ValueError, ConnectionError)
+from aetherflow import node
+import asyncio
+
+# 定义处理节点
+@node
+async def fetch_data(source: str) -> list:
+    await asyncio.sleep(0.1)  # 模拟异步IO
+    return [{"id": 1, "score": 85}, {"id": 2, "score": 45}]
+
+@node
+def validate_item(item: dict) -> dict:
+    return {**item, "valid": item["score"] > 0}
+
+@node
+def enrich_item(item: dict) -> dict:
+    return {**item, "grade": "A" if item["score"] >= 60 else "F"}
+
+@node
+def merge_results(parallel_results: dict) -> list:
+    return [r.result for r in parallel_results.values() if r.success]
+
+@node
+def classify_by_grade(items: list) -> str:
+    avg_score = sum(item["score"] for item in items) / len(items)
+    return "high" if avg_score >= 60 else "low"
+
+@node
+def generate_report(items: list) -> dict:
+    return {"report": "success", "processed": len(items)}
+
+@node
+def send_alert(items: list) -> dict:
+    return {"alert": "sent", "low_score_count": len(items)}
+
+# 构建完整数据流：异步提取 → 并行处理 → 聚合 → 条件分支
+workflow = (
+    fetch_data
+    .fan_out_to([validate_item, enrich_item])  # 并行处理每条数据
+    .fan_in(merge_results)                     # 聚合结果
+    .then(classify_by_grade)                   # 分类评估
+    .branch_on({                               # 条件分支
+        "high": generate_report,
+        "low": send_alert
+    })
 )
-def network_request(data):
-    """网络请求节点"""
-    import requests
-    response = requests.get(data['url'])
-    return {'data': response.json()}
+
+# 执行
+async def main():
+    result = await workflow("database")
+    print(result)  # {"alert": "sent", "low_score_count": 2}
+
+asyncio.run(main())
 ```
 
-### 条件分支
+## 📊 对比优势
 
-```python
-@node
-def check_condition(data):
-    return data['value'] > 10
+| 特性 | AetherFlow | Celery | Airflow | Ray |
+|------|-----------|--------|---------|-----|
+| **学习成本** | 低（函数式） | 中 | 高 | 中 |
+| **async/sync混合** | ✅ 自动处理 | ❌ | ❌ | ✅ 手动 |
+| **声明式设计** | ✅ 方法链 | ❌ | ❌ | ✅ |
+| **轻量部署** | ✅ 最小依赖 | ❌ 需Redis | ❌ 需集群 | ❌ |
 
-@node
-def high_value_processor(data):
-    return {'result': 'high', 'value': data['value']}
+> **适用场景**：中小型数据处理任务，ai agents flow 构建，微服务数据管道，强调代码可读性和快速开发
 
-@node
-def low_value_processor(data):
-    return {'result': 'low', 'value': data['value']}
+## 📚 文档资源
 
-# 条件分支管道
-pipeline = check_condition.branch_on({
-    True: high_value_processor,
-    False: low_value_processor
-})
+- 📖 **完整文档**：[AetherFlow技术文档.md](docs/AetherFlow技术文档.md) - 深入了解架构设计和最佳实践
+- 💡 **代码示例**：`tests/` 目录 - 实际使用场景和测试用例
+- 🛠️ **开发参考**：`CLAUDE.md` - Claude Code集成开发指南
+- 🔍 **API参考**：技术文档中的完整API说明
+
+## 🔧 开发环境
+
+### 开发者安装
+```bash
+# 克隆项目
+git clone https://github.com/12306hujunjie/AetherFlow.git
+cd AetherFlow
+
+# 使用PDM管理开发环境
+pdm install  # 安装所有依赖（包括开发依赖）
+
+# 运行测试
+pdm run pytest
+
+# 代码质量检查
+pdm run lint      # 代码检查
+pdm run format    # 代码格式化
+pdm run type-check # 类型检查
 ```
 
-## 🎯 使用场景
+### 开发工具
+```bash
+# 完整测试套件
+pdm run test-all     # 运行所有测试
+pdm run test-cov     # 带覆盖率的测试
 
-### ETL 数据处理
-```python
-etl_pipeline = (extract_from_database
-    .then(transform_data)
-    .then(validate_data)
-    .then(load_to_warehouse))
+# 文档测试
+pdm run doc-test     # 文档示例测试
+pdm run doc-test-verbose  # 详细输出
+
+# 预提交检查
+pdm run pre-commit   # 运行所有质量检查
 ```
 
-### ai agent智能体工作流
-```python
-ml_pipeline = (preprocess_data
-    .fan_out_to([model_a, model_b, model_c])
-    .fan_in(ensemble_predictions)
-    .then(postprocess_results))
-```
+## 🔧 技术栈
 
-## 📚 完整文档
-
-详细的技术文档请参考：[AetherFlow技术文档.md](docs/AetherFlow技术文档.md)
-
-文档包含：
-- 📖 **完整的 API 参考**: 所有类和方法的详细说明
-- 🛠️ **高级功能指南**: 状态管理、并发模式、错误处理
-- ✨ **最佳实践**: 节点设计、性能优化、调试技巧
-- 🎯 **实际应用案例**: ETL、ML、实时处理等场景
+**运行时依赖**：
+- **Python 3.10+** - 现代Python特性支持
+- **dependency-injector ≥ 4.48.1** - 依赖注入和状态管理
+- **pydantic ≥ 2.11.7** - 数据验证和类型安全
 
 
-## 📊 性能特点
-
-- 线程隔离模式在高并发下性能优势明显
-- 智能重试机制减少临时故障影响
-- 类型验证开销最小化
-- 支持线程池和进程池两种并发模式
-
-## 📈 技术栈
-
-- **核心**: Python 3.10+
-- **依赖注入**: dependency-injector
-- **并发**: threading, concurrent.futures
-- **类型支持**: typing, pydantic
-- **验证**: Pydantic 2.11.7+
-
-## 🤝 获取帮助
-
-- **完整文档**: [AetherFlow技术文档.md](docs/AetherFlow技术文档.md)
-- **代码示例**: 查看 `tests/` 目录
-- **问题报告**: 提交 GitHub Issues
+**核心模块**：`asyncio` | `threading` | `concurrent.futures`
 
 ## 📄 许可证
 
-MIT License - 详见 [LICENSE](LICENSE) 文件
+MIT许可证 - 详见 [LICENSE](LICENSE)
 
 ---
+**立即开始构建您的智能数据处理系统！** 🚀

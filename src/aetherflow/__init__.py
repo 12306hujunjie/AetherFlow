@@ -891,33 +891,70 @@ def parallel_fan_out_in(
 def conditional_composition(condition_node: Node, branches: dict[Any, Node]) -> Node:
     """Conditional branching based on boolean output."""
 
-    @inject
-    def run(*args: Any, **kwargs: Any) -> Any:
-        branch_names = {k: v.name for k, v in branches.items()}
-        composition_name = f"({condition_node.name} ? {branch_names})"
-        logger.info(f"--- Executing Conditional Branch: {composition_name} ---")
-
-        # Execute condition node
-        condition_result = condition_node(*args, **kwargs)
-
-        # Execute the appropriate branch
-        if condition_result in branches:
-            selected_branch = branches[condition_result]
-            logger.info(
-                f"Condition is {condition_result}, executing branch: {selected_branch.name}"
-            )
-            return selected_branch()
-        else:
-            msg = f"No branch defined for condition result: {condition_result}"
-            logger.error(msg)
-            raise ValueError(msg)
-
-    # Create a new Node with the conditional execution
-    branch_names = {k: v.name for k, v in branches.items()}
-    return Node(
-        func=run,
-        name=f"({condition_node.name} ? {branch_names})",
+    # 检测是否有异步节点
+    has_async = condition_node.is_async or any(
+        branch.is_async for branch in branches.values()
     )
+
+    branch_names = {k: v.name for k, v in branches.items()}
+    composition_name = f"({condition_node.name} ? {branch_names})"
+
+    if has_async:
+        # 异步版本
+        async def async_run(*args: Any, **kwargs: Any) -> Any:
+            logger.info(f"--- Executing Conditional Branch: {composition_name} ---")
+
+            # 执行条件节点
+            condition_result = (
+                await condition_node(*args, **kwargs)
+                if condition_node.is_async
+                else condition_node(*args, **kwargs)
+            )
+
+            # 执行对应的分支
+            if condition_result in branches:
+                selected_branch = branches[condition_result]
+                logger.info(
+                    f"Condition is {condition_result}, executing branch: {selected_branch.name}"
+                )
+                return (
+                    await selected_branch()
+                    if selected_branch.is_async
+                    else selected_branch()
+                )
+            else:
+                msg = f"No branch defined for condition result: {condition_result}"
+                logger.error(msg)
+                raise ValueError(msg)
+
+        return Node(
+            func=async_run,
+            name=composition_name,
+        )
+    else:
+        # 同步版本
+        def run(*args: Any, **kwargs: Any) -> Any:
+            logger.info(f"--- Executing Conditional Branch: {composition_name} ---")
+
+            # Execute condition node
+            condition_result = condition_node(*args, **kwargs)
+
+            # Execute the appropriate branch
+            if condition_result in branches:
+                selected_branch = branches[condition_result]
+                logger.info(
+                    f"Condition is {condition_result}, executing branch: {selected_branch.name}"
+                )
+                return selected_branch()
+            else:
+                msg = f"No branch defined for condition result: {condition_result}"
+                logger.error(msg)
+                raise ValueError(msg)
+
+        return Node(
+            func=run,
+            name=composition_name,
+        )
 
 
 def repeat_composition(node: Node, times: int, stop_on_error: bool = False) -> Node:
@@ -941,53 +978,105 @@ def repeat_composition(node: Node, times: int, stop_on_error: bool = False) -> N
     # 创建组合节点的名称
     composition_name = f"({node.name} * {times})"
 
-    # 定义执行函数
-    def run(*args: Any, **kwargs: Any) -> Any:
-        logger.info(f"--- Executing Repeat Composition: {composition_name} ---")
+    # 检测是否包含异步节点，决定创建同步还是异步执行函数
+    if node.is_async:
+        # 异步节点：创建异步执行函数
+        async def async_run(*args: Any, **kwargs: Any) -> Any:
+            logger.info(
+                f"--- Executing Async Repeat Composition: {composition_name} ---"
+            )
 
-        last_result = None
-        errors = []
+            last_result = None
+            errors = []
 
-        for i in range(times):
-            logger.info(f"  - Iteration {i + 1}/{times}")
+            for i in range(times):
+                logger.info(f"  - Iteration {i + 1}/{times}")
 
-            try:
-                # 正常执行
-                if i == 0:
-                    result = node(*args, **kwargs)
-                else:
-                    result = node(last_result)
+                try:
+                    # 正常执行异步节点
+                    if i == 0:
+                        result = await node(*args, **kwargs)
+                    else:
+                        result = await node(last_result)
 
-                # 成功执行
-                last_result = result
-                logger.debug(f"Iteration {i + 1} completed successfully")
+                    # 成功执行
+                    last_result = result
+                    logger.debug(f"Iteration {i + 1} completed successfully")
 
-            except Exception as e:
-                errors.append(e)
-                logger.error(f"Iteration {i + 1} failed: {e}")
+                except Exception as e:
+                    errors.append(e)
+                    logger.error(f"Iteration {i + 1} failed: {e}")
 
-                # 检查是否应该立即停止
-                if stop_on_error:
-                    logger.error("Stopping immediately due to stop_on_error=True")
-                    # 抛出RepeatStopException，让其被重试机制处理
-                    raise LoopControlException(
-                        f"Execution stopped due to error at iteration {i + 1}: {e}"
-                    ) from e
+                    # 检查是否应该立即停止
+                    if stop_on_error:
+                        logger.error("Stopping immediately due to stop_on_error=True")
+                        # 抛出RepeatStopException，让其被重试机制处理
+                        raise LoopControlException(
+                            f"Execution stopped due to error at iteration {i + 1}: {e}"
+                        ) from e
 
-                # 继续执行，但使用上一次的成功结果
-                logger.info(
-                    f"Continuing with last successful result from iteration {i}"
-                )
+                    # 继续执行，但使用上一次的成功结果
+                    logger.info(
+                        f"Continuing with last successful result from iteration {i}"
+                    )
 
-        # 正常完成
-        logger.info(
-            f"Repeat composition completed. Iterations: {times}, Errors: {len(errors)}"
-        )
+            # 正常完成
+            logger.info(
+                f"Async repeat composition completed. Iterations: {times}, Errors: {len(errors)}"
+            )
 
-        return last_result
+            return last_result
 
-    # 使用@node装饰器创建节点，禁用重试避免重复处理
-    return Node(func=run, name=composition_name)
+        return Node(func=async_run, name=composition_name, is_start_node=False)
+    else:
+        # 同步节点：创建同步执行函数
+        def run(*args: Any, **kwargs: Any) -> Any:
+            logger.info(
+                f"--- Executing Sync Repeat Composition: {composition_name} ---"
+            )
+
+            last_result = None
+            errors = []
+
+            for i in range(times):
+                logger.info(f"  - Iteration {i + 1}/{times}")
+
+                try:
+                    # 正常执行同步节点
+                    if i == 0:
+                        result = node(*args, **kwargs)
+                    else:
+                        result = node(last_result)
+
+                    # 成功执行
+                    last_result = result
+                    logger.debug(f"Iteration {i + 1} completed successfully")
+
+                except Exception as e:
+                    errors.append(e)
+                    logger.error(f"Iteration {i + 1} failed: {e}")
+
+                    # 检查是否应该立即停止
+                    if stop_on_error:
+                        logger.error("Stopping immediately due to stop_on_error=True")
+                        # 抛出RepeatStopException，让其被重试机制处理
+                        raise LoopControlException(
+                            f"Execution stopped due to error at iteration {i + 1}: {e}"
+                        ) from e
+
+                    # 继续执行，但使用上一次的成功结果
+                    logger.info(
+                        f"Continuing with last successful result from iteration {i}"
+                    )
+
+            # 正常完成
+            logger.info(
+                f"Sync repeat composition completed. Iterations: {times}, Errors: {len(errors)}"
+            )
+
+            return last_result
+
+        return Node(func=run, name=composition_name, is_start_node=False)
 
 
 def node(
@@ -1017,10 +1106,10 @@ def node(
 
     # Async node with retry
     @node(retry_count=3, retry_delay=0.5)
-    async def fetch_api_data(url: str) -> dict:
-        async with httpx.AsyncClient() as client:
-            response = await client.get(url)
-            return response.json()
+    async def fetch_data(data_id: str) -> dict:
+        # Simulate async data fetching
+        await asyncio.sleep(0.1)
+        return {"data_id": data_id, "value": f"fetched_{data_id}"}
 
     # Custom retry configuration
     @node(retry_count=5, retry_delay=2.0, exception_types=(ConnectionError, TimeoutError))

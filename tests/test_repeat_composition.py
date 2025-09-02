@@ -9,13 +9,16 @@ test_repeat_composition.py - repeat_composition重复执行功能专项测试
 4. 错误处理策略(stop_on_error=True/False)
 5. 数据流在迭代间的传递
 6. 性能和稳定性验证
+7. 异步节点重复执行支持
 
 测试原则：
 - 最大化复用现有测试节点
 - 专注于repeat_composition核心逻辑
 - 全面覆盖正向、边界、异常场景
+- 确保同步/异步混合执行的架构一致性
 """
 
+import asyncio
 import time
 from typing import Any
 
@@ -271,14 +274,150 @@ class TestRepeatComposition:
         except Exception as e:
             pytest.fail(f"错误累积处理失败: {e}")
 
+    async def test_async_node_repeat_functionality(self):
+        """测试异步节点的重复执行功能"""
+        print("\n=== 测试异步节点重复执行 ===")
+
+        # 定义异步测试节点
+        @node
+        async def async_add_1(x: int) -> int:
+            """异步递增节点"""
+            await asyncio.sleep(0.01)  # 模拟异步操作
+            return x + 1
+
+        @node
+        async def async_multiply_2(x: int) -> int:
+            """异步倍增节点"""
+            await asyncio.sleep(0.01)  # 模拟异步操作
+            return x * 2
+
+        # 测试异步节点基本重复执行
+        async_repeat = repeat_composition(async_add_1, times=3)
+        result = await async_repeat(5)  # 5 -> 6 -> 7 -> 8
+
+        assert result == 8, f"异步重复执行失败: 期望8，实际{result}"
+        print(f"✅ 异步节点重复执行: 5 -> {result}")
+
+        # 测试异步节点数据累积
+        async_multiply_repeat = repeat_composition(async_multiply_2, times=3)
+        multiply_result = await async_multiply_repeat(2)  # 2 -> 4 -> 8 -> 16
+
+        assert multiply_result == 16, f"异步倍增重复失败: 期望16，实际{multiply_result}"
+        print(f"✅ 异步倍增重复: 2 -> {multiply_result}")
+
+    async def test_async_node_error_handling(self):
+        """测试异步节点的错误处理"""
+        print("\n=== 测试异步节点错误处理 ===")
+
+        @node
+        async def async_error_node(x: int) -> int:
+            """异步错误节点"""
+            await asyncio.sleep(0.01)
+            raise ValueError(f"Async error with value: {x}")
+
+        @node
+        async def async_conditional_error_node(x: int) -> int:
+            """异步条件错误节点"""
+            await asyncio.sleep(0.01)
+            if x > 10:
+                raise ValueError(f"Async value too large: {x}")
+            return x + 2
+
+        # 测试stop_on_error=True
+        async_error_repeat = repeat_composition(
+            async_error_node, times=3, stop_on_error=True
+        )
+
+        with pytest.raises(
+            LoopControlException, match="Execution stopped due to error"
+        ):
+            await async_error_repeat(5)
+        print("✅ 异步节点stop_on_error=True正确处理")
+
+        # 测试stop_on_error=False
+        async_error_continue = repeat_composition(
+            async_error_node, times=2, stop_on_error=False
+        )
+        result = await async_error_continue(5)
+        assert result is None, "异步节点连续失败应返回None"
+        print("✅ 异步节点stop_on_error=False正确处理")
+
+        # 测试混合成功失败
+        async_mixed_repeat = repeat_composition(
+            async_conditional_error_node, times=4, stop_on_error=False
+        )
+        mixed_result = await async_mixed_repeat(5)  # 5->7->9->11(失败)
+
+        assert mixed_result == 11, f"异步混合场景错误: 期望11，实际{mixed_result}"
+        print(f"✅ 异步混合成功失败: 5 -> {mixed_result}")
+
+    async def test_async_performance_validation(self):
+        """测试异步节点的性能表现"""
+        print("\n=== 测试异步节点性能 ===")
+
+        @node
+        async def fast_async_add(x: int) -> int:
+            """快速异步递增"""
+            await asyncio.sleep(0.001)  # 1ms延迟
+            return x + 1
+
+        # 测试异步节点大量重复的性能
+        async_large_repeat = repeat_composition(fast_async_add, times=100)
+
+        start_time = time.time()
+        result = await async_large_repeat(0)
+        execution_time = time.time() - start_time
+
+        assert result == 100, f"异步大量重复结果错误: 期望100，实际{result}"
+        assert execution_time < 2.0, f"异步大量重复耗时过长: {execution_time:.3f}秒"
+        print(f"✅ 异步100次重复: 0 -> {result}, 耗时{execution_time:.3f}秒")
+
+    def test_sync_async_architecture_consistency(self):
+        """测试同步/异步架构一致性"""
+        print("\n=== 测试同步异步架构一致性 ===")
+
+        # 验证同步和异步repeat_composition创建的Node的is_async属性正确
+        sync_repeat = repeat_composition(add_1_node, times=3)
+        assert not sync_repeat.is_async, "同步repeat节点应该标记为非异步"
+
+        @node
+        async def async_test_node(x: int) -> int:
+            await asyncio.sleep(0.001)
+            return x + 1
+
+        async_repeat = repeat_composition(async_test_node, times=3)
+        assert async_repeat.is_async, "异步repeat节点应该标记为异步"
+
+        print("✅ 同步异步Node标记正确")
+
+        # 验证节点名称生成一致性
+        assert "(add_1_node * 3)" in sync_repeat.name, "同步repeat节点名称格式错误"
+        assert "(async_test_node * 3)" in async_repeat.name, (
+            "异步repeat节点名称格式错误"
+        )
+
+        print("✅ 节点名称生成一致")
+
 
 if __name__ == "__main__":
     print("=== repeat_composition专项功能测试 ===")
 
+    async def run_async_tests():
+        """运行异步测试"""
+        test_instance = TestRepeatComposition()
+
+        print("\n--- 异步测试 ---")
+        await test_instance.test_async_node_repeat_functionality()
+        await test_instance.test_async_node_error_handling()
+        await test_instance.test_async_performance_validation()
+
+        print("\n✅ 所有异步测试通过！")
+
     try:
         test_instance = TestRepeatComposition()
 
-        # 执行所有测试方法
+        # 执行同步测试方法
+        print("\n--- 同步测试 ---")
         test_instance.test_basic_repeat_functionality()
         test_instance.test_repeat_times_variations()
         test_instance.test_boundary_conditions()
@@ -290,8 +429,14 @@ if __name__ == "__main__":
         test_instance.test_node_name_generation()
         test_instance.test_single_iteration_equivalence()
         test_instance.test_error_accumulation_logging()
+        test_instance.test_sync_async_architecture_consistency()
 
-        print("\n🎉 所有repeat_composition测试通过！")
+        print("\n✅ 所有同步测试通过！")
+
+        # 执行异步测试方法
+        asyncio.run(run_async_tests())
+
+        print("\n🎉 所有repeat_composition测试通过（同步 + 异步）！")
 
     except Exception as e:
         print(f"\n❌ 测试失败: {e}")

@@ -95,6 +95,22 @@ warn_unreachable = true
 strict_equality = true
 show_error_codes = true
 
+# Pytest configuration
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "-v --tb=short"
+
+
+# 过滤警告
+filterwarnings = [
+    "ignore::DeprecationWarning",
+    "ignore::PendingDeprecationWarning",
+]
+
 # Bandit configuration
 [tool.bandit]
 skips = ["B101"]  # Skip assert_used test

@@ -1,5 +1,5 @@
 # CLAUDE.md
-- 使用中文内容
+
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ## 核心原则
@@ -8,17 +8,21 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **渐进优于激进**: 小步骤改进，每个变更都可验证和回滚
 - **证据优于假设**: 所有决策基于实际测试和分析，不依赖猜测
 - **简单优于复杂**: 优先选择最简单有效的解决方案
+- **显式胜于隐式**: fluent interface设计中明确表达数据流和转换逻辑
+- **可读性很重要**: 复杂异步流程必须保持清晰的代码结构和意图表达
 
 ## 项目架构
 
 ### 核心概念
-AetherFlow是一个声明式数据处理工作流框架，核心架构基于：
+AetherFlow是一个智能异步数据处理工作流框架，核心架构基于：
 
-- **Node类**: 执行图中的基本单元，支持fluent interface链式调用
-- **流式接口**: `.then()`, `.fan_out_to()`, `.fan_in()`, `.branch_on()`, `.repeat()` 方法
-- **并行处理**: 基于ThreadPoolExecutor/ProcessPoolExecutor的扇出/扇入模式
-- **依赖注入**: 集成dependency-injector的线程安全状态管理
-- **重试机制**: 可配置的指数退避重试装饰器
+- **Node类**: 执行图的基本单元，支持fluent interface链式调用和智能异步/同步混合执行
+- **@node装饰器**: 智能节点包装器，自动处理异步/同步兼容性、重试机制和依赖注入
+- **流式接口**: `.then()`, `.fan_out_to()`, `.fan_in()`, `.branch_on()`, `.repeat()` 方法支持任意async/sync混合
+- **智能异步系统**: 框架自动检测async/sync函数并选择正确的执行策略，无需开发者显式处理
+- **并行处理**: 基于ThreadPoolExecutor的扇出/扇入模式，支持混合异步执行
+- **依赖注入**: 集成dependency-injector，使用BaseFlowContext进行线程安全状态管理
+- **重试机制**: 可配置的指数退避重试，支持异步和同步节点
 
 ### 关键文件结构
 - `src/aetherflow/__init__.py`: 单一模块包含所有核心功能（~1000行）
@@ -26,13 +30,11 @@ AetherFlow是一个声明式数据处理工作流框架，核心架构基于：
 - `tests/utils/node_factory.py`: 标准化测试节点定义
 - `tests/shared/`: 共享数据模型和测试常量
 
-### 核心类和方法
-- `Node.__init__()`: 节点创建，支持重试配置和依赖注入
-- `Node.then()`: 顺序链接 (src/aetherflow/__init__.py:322)
-- `Node.fan_out_to()`: 并行扇出 (src/aetherflow/__init__.py:326)
-- `Node.fan_in()`: 结果汇入 (src/aetherflow/__init__.py:335)
-- `Node.branch_on()`: 条件分支 (src/aetherflow/__init__.py:349)
-- `Node.repeat()`: 重复执行 (src/aetherflow/__init__.py:353)
+### 核心类和方法发现指南
+- 使用 `Grep` 搜索 `class Node` 了解Node类的完整定义
+- 搜索 `def then|def fan_out|def fan_in|def branch_on|def repeat` 了解fluent interface方法
+- 查看 `@node` 装饰器定义了解节点包装机制
+- 搜索 `BaseFlowContext` 了解依赖注入容器结构
 
 ## 开发命令
 
@@ -89,6 +91,9 @@ pdm run bandit -r src/
 - **类型注解**: 所有函数必须有类型注解（MyPy strict模式）
 - **Pydantic验证**: 使用Pydantic BaseModel进行数据验证
 - **日志记录**: 使用标准logging库，logger名称为"aetherflow"
+- **命名约定**: 函数和变量使用snake_case，类使用PascalCase，常量使用UPPER_CASE
+- **文档字符串**: 使用简洁的docstring描述节点功能和参数，遵循项目现有风格
+- **导入组织**: 标准库 → 第三方库 → 项目内部导入，使用绝对导入路径
 
 ### 架构约束
 - **单模块设计**: 核心功能集中在`__init__.py`中，避免过度拆分
@@ -111,19 +116,24 @@ pdm run bandit -r src/
 - **错误处理测试**: 重试机制、异常传播、超时处理
 - **依赖注入测试**: 状态管理和线程隔离
 
-### 常用测试模式
-```python
-# 使用标准节点工厂
-from tests.utils.node_factory import add_10_node, double_node
+### 测试开发指南
 
-# 构建测试流程
-flow = add_10_node.then(double_node)
-result = flow(5)  # (5 + 10) * 2 = 30
+**探索现有模式**：
+- 使用 `Grep` 工具搜索 `@node` 装饰器了解节点定义模式
+- 查看 `tests/utils/` 目录了解当前可用的测试工具和节点工厂
+- 参考 `tests/shared/` 目录了解数据模型和测试常量
+- 检查现有测试文件学习fluent interface链式调用模式
 
-# 并行测试验证
-from tests.utils.parallel_utils import verify_parallel_execution
-verify_parallel_execution(flow, input_data, expected_results)
-```
+**核心测试约束**：
+- 测试节点必须定义在模块级别以支持pickle序列化
+- 使用 `@node` 装饰器而不是直接实例化Node类
+- 每个测试应使用独立的依赖注入容器实例
+- 异步/同步混合测试需要正确的await处理
+
+**发现测试工具**：
+- 搜索 `tests/utils/` 目录了解验证工具
+- 查看 `ParallelResult` 相关用法了解并行处理验证
+- 检查现有测试的container setup模式
 
 ## 调试和问题排查
 
@@ -144,6 +154,10 @@ verify_parallel_execution(flow, input_data, expected_results)
 - **线程vs进程**: 默认使用ThreadPoolExecutor，CPU密集任务考虑ProcessPoolExecutor
 - **状态管理**: 避免大对象在线程间传递，使用引用或标识符
 - **内存效率**: 大数据流使用生成器模式，避免全量加载
+- **数据结构选择**: 使用`collections.deque`用于队列操作，`set`用于去重和成员检查
+- **惰性求值**: 优先使用生成器表达式而非列表推导，延迟计算直到真正需要
+- **缓存策略**: 使用`functools.lru_cache`缓存计算结果，避免重复计算
+- **内置函数优化**: 优先使用内置函数如`map()`, `filter()`, `any()`, `all()`而非手写循环
 
 ### 错误恢复
 - **分层重试**: Node级别重试 + 组合级别重试

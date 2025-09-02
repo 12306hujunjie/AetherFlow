@@ -184,3 +184,4 @@ hive-mind-prompt-*.txt
 .claude-flow/
 .bmad-core/
 .trae/
+.vscode/
