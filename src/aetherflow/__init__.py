@@ -228,19 +228,18 @@ def retry_decorator(
                         raise
                     except Exception as e:
                         if not config.should_retry(e):
-                            raise NodeExecutionException(
-                                f"节点执行失败，异常类型不支持重试: {type(e).__name__}",
-                                node_name=func_name,
-                                original_exception=e,
-                            ) from e
+                            # 记录不重试的原因
+                            logger.debug(
+                                f"节点 {func_name} 异常不支持重试: {type(e).__name__}: {e}"
+                            )
+                            raise  # 直接抛出，不封装
 
                         if attempt == config.retry_count:
-                            raise NodeRetryExhaustedException(
-                                f"节点 {func_name} 重试次数耗尽，最后异常: {type(e).__name__}: {e}",
-                                node_name=func_name,
-                                retry_count=config.retry_count,
-                                last_exception=e,
-                            ) from e
+                            # 记录重试耗尽
+                            logger.error(
+                                f"节点 {func_name} 重试 {config.retry_count} 次后仍失败: {type(e).__name__}: {e}"
+                            )
+                            raise  # 重试耗尽也直接抛出，不封装
 
                         delay = config.get_delay(attempt)
                         logger.warning(
@@ -270,19 +269,18 @@ def retry_decorator(
                         raise
                     except Exception as e:
                         if not config.should_retry(e):
-                            raise NodeExecutionException(
-                                f"节点执行失败，异常类型不支持重试: {type(e).__name__}",
-                                node_name=func_name,
-                                original_exception=e,
-                            ) from e
+                            # 记录不重试的原因
+                            logger.debug(
+                                f"节点 {func_name} 异常不支持重试: {type(e).__name__}: {e}"
+                            )
+                            raise  # 直接抛出，不封装
 
                         if attempt == config.retry_count:
-                            raise NodeRetryExhaustedException(
-                                f"节点 {func_name} 重试次数耗尽，最后异常: {type(e).__name__}: {e}",
-                                node_name=func_name,
-                                retry_count=config.retry_count,
-                                last_exception=e,
-                            ) from e
+                            # 记录重试耗尽
+                            logger.error(
+                                f"节点 {func_name} 重试 {config.retry_count} 次后仍失败: {type(e).__name__}: {e}"
+                            )
+                            raise  # 重试耗尽也直接抛出，不封装
 
                         delay = config.get_delay(attempt)
                         logger.warning(
@@ -1088,7 +1086,7 @@ def node(
     exception_types: tuple = (Exception,),
     backoff_factor: float = 1.0,
     max_delay: float = 60.0,
-    enable_retry: bool = True,
+    enable_retry: bool = False,
 ) -> Node | Callable:
     """
     Decorator: Create Node from function with dependency injection, type validation, and retry mechanism.

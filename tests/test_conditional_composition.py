@@ -15,7 +15,6 @@ from dependency_injector.wiring import Provide
 
 from src.aetherflow import (
     BaseFlowContext,
-    NodeExecutionException,
     node,
 )
 
@@ -78,7 +77,7 @@ def format_negative_node(state: dict = Provide[BaseFlowContext.state]) -> str:
 
 
 @node
-def format_zero_node(state: dict = Provide[BaseFlowContext.state]) -> str:
+def format_zero_node() -> str:
     """格式化零值分支"""
     return "zero value"
 
@@ -267,10 +266,7 @@ class TestConditionalComposition:
         failing_flow = error_condition_node.branch_on(branches)
 
         # 条件节点失败应该传播异常
-        with pytest.raises(
-            NodeExecutionException,
-            match="节点执行失败，异常类型不支持重试: ValueError",
-        ):
+        with pytest.raises(ValueError, match="Condition error with input: 10"):
             failing_flow(10)
 
         print("✅ 条件节点失败正确传播异常")
@@ -287,10 +283,7 @@ class TestConditionalComposition:
         branching_flow = boolean_condition_node.branch_on(branches)
 
         # 偶数 -> True分支 -> parameter_free_error_node失败
-        with pytest.raises(
-            NodeExecutionException,
-            match="节点执行失败，异常类型不支持重试: ValueError",
-        ):
+        with pytest.raises(ValueError, match="Branch error with input: 4"):
             branching_flow(4)
 
         # 奇数 -> False分支 -> add_branch_node正常
