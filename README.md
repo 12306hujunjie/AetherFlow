@@ -164,7 +164,7 @@ pdm run pre-commit   # 运行所有质量检查
 - **Python 3.10+** - 现代Python特性支持
 - **dependency-injector ≥ 4.48.1** - 依赖注入和状态管理
 - **pydantic ≥ 2.11.7** - 数据验证和类型安全
-- **httpx ≥ 0.28.1** - 异步HTTP客户端支持
+
 
 **核心模块**：`asyncio` | `threading` | `concurrent.futures`
 

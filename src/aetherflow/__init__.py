@@ -1106,10 +1106,10 @@ def node(
 
     # Async node with retry
     @node(retry_count=3, retry_delay=0.5)
-    async def fetch_api_data(url: str) -> dict:
-        async with httpx.AsyncClient() as client:
-            response = await client.get(url)
-            return response.json()
+    async def fetch_data(data_id: str) -> dict:
+        # Simulate async data fetching
+        await asyncio.sleep(0.1)
+        return {"data_id": data_id, "value": f"fetched_{data_id}"}
 
     # Custom retry configuration
     @node(retry_count=5, retry_delay=2.0, exception_types=(ConnectionError, TimeoutError))
