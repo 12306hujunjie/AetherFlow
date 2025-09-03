@@ -1,0 +1,168 @@
+# AetherFlow Agent Configuration Example
+#
+# This file shows all available configuration options with their default values
+# and descriptions. Copy this file to your project root and customize as needed.
+#
+# Configuration Priority (highest to lowest):
+# 1. Environment variables (AETHERFLOW_AGENT_*)
+# 2. Configuration files (.aetherflow/config.yaml, aetherflow.config.yaml, etc.)
+# 3. Programmatic configuration (passed to ContainerFactory)
+# 4. Default values (shown below)
+
+# Large Language Model Configuration
+llm:
+  # OpenAI API key - REQUIRED
+  # Can also be set via OPENAI_API_KEY environment variable
+  api_key: "your-openai-api-key-here"
+
+  # Model name to use
+  model: "gpt-4"
+
+  # Sampling temperature (0.0 = deterministic, 2.0 = very creative)
+  temperature: 0.1
+
+  # Maximum tokens per response
+  max_tokens: 2000
+
+  # Request timeout in seconds
+  timeout: 60
+
+  # Optional: Custom base URL for API requests
+  # base_url: "https://api.openai.com/v1"
+
+  # Optional: OpenAI organization ID
+  # organization: "org-your-organization-id"
+
+# Tools System Configuration
+tools:
+  # Automatically discover and register available tools
+  auto_discover: true
+
+  # Specific tool packages to load (in addition to auto-discovery)
+  packages: []
+
+  # Maximum concurrent tool workers
+  max_workers: 4
+
+  # Tool execution timeout in seconds
+  timeout: 30
+
+  # Retry configuration for failed tool calls
+  retry:
+    max_retries: 3
+    initial_delay: 1.0
+    max_delay: 60.0
+    exponential_base: 2.0
+    jitter: true
+
+# Memory Management Configuration
+memory:
+  # Maximum number of messages to keep in conversation memory
+  max_messages: 1000
+
+  # Maximum tokens to allow in context window
+  max_tokens: 8000
+
+  # Tokens to reserve for model completion
+  reserve_tokens: 1000
+
+  # Enable automatic memory compression for long conversations
+  enable_compression: true
+
+  # Path for persistent memory storage
+  storage_path: ".aetherflow/memory"
+
+  # Strategy for trimming memory when limits are reached
+  # Options: "recent_first", "oldest_first", "importance_based"
+  trimming_strategy: "recent_first"
+
+# Persistent Storage Configuration
+storage:
+  # Path for session and state storage
+  path: ".aetherflow/sessions"
+
+  # Automatically save session data
+  auto_save: true
+
+  # Auto-save interval in seconds
+  save_interval: 30
+
+  # Enable storage compression
+  compression: true
+
+  # Days to keep old session files
+  cleanup_days: 30
+
+# ReAct Engine Configuration
+react:
+  # Maximum reasoning/action steps per task
+  max_steps: 10
+
+  # Timeout per reasoning step in seconds
+  step_timeout: 30
+
+  # Enable streaming responses (if supported)
+  enable_streaming: false
+
+  # Stop early when task is completed successfully
+  early_stopping: true
+
+# Prompt Templates Configuration
+prompts:
+  # Path to custom prompt templates directory
+  # template_path: "./custom_prompts"
+
+  # Default language for prompts
+  language: "en"
+
+  # Prompt style
+  # Options: "professional", "casual", "technical", "creative"
+  style: "professional"
+
+# Logging Configuration
+logging:
+  # Log level: DEBUG, INFO, WARNING, ERROR, CRITICAL
+  level: "INFO"
+
+  # Log message format
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+
+  # Log handlers: console, file, rotating
+  handlers:
+    - "console"
+
+  # Log file path (required if file handler is enabled)
+  # file_path: ".aetherflow/logs/agent.log"
+
+# Monitoring and Metrics Configuration
+monitoring:
+  # Enable metrics collection
+  enabled: true
+
+  # Metrics collection interval in seconds
+  interval: 60
+
+  # Metrics storage backend
+  # Options: "memory", "file", "http"
+  backend: "memory"
+
+  # HTTP endpoint for metrics (if using http backend)
+  # endpoint: "http://localhost:8000/metrics"
+
+# Development/Testing Overrides
+# Uncomment and modify for development environments
+#
+# dev:
+#   llm:
+#     model: "gpt-3.5-turbo"  # Faster/cheaper for development
+#     temperature: 0.0       # Deterministic for testing
+#     max_tokens: 500        # Lower limits for development
+#
+#   memory:
+#     max_messages: 50       # Smaller memory for testing
+#
+#   monitoring:
+#     enabled: false         # Disable monitoring in development
+#
+#   logging:
+#     level: "DEBUG"         # Verbose logging for development

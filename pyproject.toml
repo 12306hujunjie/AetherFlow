@@ -5,7 +5,7 @@ description = "A powerful Python framework for building declarative, concurrent 
 authors = [
     {name = "12306hujunjie", email = "545512690@qq.com"},
 ]
-dependencies = ["dependency-injector>=4.48.1", "pydantic>=2.11.7"]
+dependencies = ["dependency-injector>=4.48.1", "pydantic>=2.11.7", "openai>=1.0.0"]
 requires-python = ">=3.10"
 readme = "README.md"
 license = {file = "LICENSE"}
