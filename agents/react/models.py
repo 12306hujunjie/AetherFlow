@@ -4,7 +4,7 @@
 """
 
 from enum import Enum
-from typing import Any, Union
+from typing import Any
 
 from pydantic import BaseModel, Field, validator
 
@@ -183,4 +183,4 @@ class ReActExecutionResult(BaseModel):
 
 
 # 类型别名，提供更好的类型提示
-ReActMessage = Union[ReasoningResult, ActionResult, ObservationResult]
+ReActMessage = ReasoningResult | ActionResult | ObservationResult

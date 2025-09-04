@@ -139,7 +139,7 @@ class OpenAIClient:
 
         except Exception as e:
             logger.error(f"同步completion失败: {e}")
-            raise self._handle_exception(e)
+            raise self._handle_exception(e) from None
 
     @retry_on_failure(config=DEFAULT_RETRY_CONFIG)
     async def complete_async(
@@ -192,7 +192,7 @@ class OpenAIClient:
 
         except Exception as e:
             logger.error(f"异步completion失败: {e}")
-            raise self._handle_exception(e)
+            raise self._handle_exception(e) from None
 
     @retry_on_failure(config=DEFAULT_RETRY_CONFIG)
     def chat_complete(
@@ -250,7 +250,7 @@ class OpenAIClient:
 
         except Exception as e:
             logger.error(f"同步chat completion失败: {e}")
-            raise self._handle_exception(e)
+            raise self._handle_exception(e) from None
 
     @retry_on_failure(config=DEFAULT_RETRY_CONFIG)
     async def chat_complete_async(
@@ -319,7 +319,7 @@ class OpenAIClient:
 
         except Exception as e:
             logger.error(f"异步chat completion失败: {e}")
-            raise self._handle_exception(e)
+            raise self._handle_exception(e) from None
 
     async def _create_stream_response(
         self,
@@ -354,7 +354,7 @@ class OpenAIClient:
 
         except Exception as e:
             logger.error(f"流式响应异常: {e}")
-            raise self._handle_exception(e)
+            raise self._handle_exception(e) from None
 
     def _handle_exception(self, error: Exception) -> OpenAIException:
         """处理和转换异常类型。

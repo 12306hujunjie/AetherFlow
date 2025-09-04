@@ -285,7 +285,7 @@ class ContainerFactory:
 
         except Exception as e:
             logger.error(f"Failed to create AgentContainer: {e}")
-            raise ConfigurationError(f"Container creation failed: {e}")
+            raise ConfigurationError(f"Container creation failed: {e}") from e
 
     @classmethod
     def get_default_container(cls) -> AgentContainer:
@@ -333,9 +333,9 @@ class ContainerFactory:
             "memory": {
                 "max_messages": 10,
                 "max_tokens": 1000,
-                "storage_path": "/tmp/aetherflow_test_memory",
+                "storage_path": "/tmp/aetherflow_test_memory",  # nosec B108
             },
-            "storage": {"path": "/tmp/aetherflow_test_storage", "auto_save": False},
+            "storage": {"path": "/tmp/aetherflow_test_storage", "auto_save": False},  # nosec B108
             "logging": {"level": "DEBUG"},
             "monitoring": {"enabled": False},
         }

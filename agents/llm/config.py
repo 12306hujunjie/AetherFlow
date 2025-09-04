@@ -1,7 +1,7 @@
 """OpenAI配置类和相关配置管理。"""
 
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from pydantic import BaseModel, Field, validator
 
@@ -14,29 +14,49 @@ class OpenAIConfig:
     连接参数等。支持从环境变量自动加载配置。
     """
 
-    api_key: str = field(default_factory=lambda: os.getenv("OPENAI_API_KEY", ""))
+    api_key: str | None = None
     """OpenAI API密钥，默认从环境变量OPENAI_API_KEY获取"""
 
-    model: str = "gpt-3.5-turbo"
+    model: str | None = None
     """默认使用的模型"""
 
-    base_url: str | None = field(default_factory=lambda: os.getenv("OPENAI_BASE_URL"))
+    base_url: str | None = None
     """API基础URL，支持自定义OpenAI兼容服务"""
 
-    timeout: int = 30
+    timeout: int | None = None
     """请求超时时间（秒）"""
 
-    max_retries: int = 3
+    max_retries: int | None = None
     """最大重试次数"""
 
-    temperature: float = 0.7
+    temperature: float | None = None
     """默认温度参数，控制响应的随机性"""
 
     max_tokens: int | None = None
     """最大token数量限制"""
 
     def __post_init__(self) -> None:
-        """初始化后验证配置。"""
+        """初始化后验证配置，设置默认值。"""
+        # 设置默认值
+        if self.api_key is None:
+            self.api_key = os.getenv("OPENAI_API_KEY", "")
+
+        if self.model is None:
+            self.model = "gpt-3.5-turbo"
+
+        if self.base_url is None:
+            self.base_url = os.getenv("OPENAI_BASE_URL")
+
+        if self.timeout is None:
+            self.timeout = 30
+
+        if self.max_retries is None:
+            self.max_retries = 3
+
+        if self.temperature is None:
+            self.temperature = 0.7
+
+        # 验证配置
         if not self.api_key:
             raise ValueError(
                 "OpenAI API key is required. "

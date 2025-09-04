@@ -1,7 +1,7 @@
 """测试重试机制。"""
 
 import time
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 

@@ -287,7 +287,7 @@ class AgentConfig(BaseModel):
             except (OSError, PermissionError) as e:
                 raise ConfigurationError(
                     f"Cannot create storage path {path_field}: {e}"
-                )
+                ) from e
 
     @classmethod
     def from_env(cls, prefix: str = "AETHERFLOW_AGENT_") -> "AgentConfig":
@@ -373,7 +373,7 @@ class FileConfigSource(ConfigSource):
             if self.required:
                 raise ConfigurationError(
                     f"Failed to load configuration file {self.file_path}: {e}"
-                )
+                ) from e
             return {}
 
 
@@ -425,7 +425,7 @@ class ConfigLoader:
                 if source.required:
                     raise ConfigurationError(
                         f"Failed to load required configuration source: {e}"
-                    )
+                    ) from e
                 # Log warning for optional sources but continue
                 import logging
 
@@ -438,7 +438,7 @@ class ConfigLoader:
             config.validate_complete()
             return config
         except Exception as e:
-            raise ConfigurationError(f"Configuration validation failed: {e}")
+            raise ConfigurationError(f"Configuration validation failed: {e}") from e
 
 
 # Utility functions

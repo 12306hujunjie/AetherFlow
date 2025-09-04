@@ -23,16 +23,16 @@ class AgentContainer(BaseFlowContext):
     # 配置提供者
     config = providers.Configuration()
 
-    # OpenAI相关配置
+    # OpenAI相关配置 - 使用Singleton来保持单例行为
     openai_config = providers.Singleton(
         OpenAIConfig,
-        api_key=config.openai.api_key.as_(str, default=""),
-        model=config.openai.model.as_(str, default="gpt-3.5-turbo"),
-        base_url=config.openai.base_url.as_(str, default=None),
-        timeout=config.openai.timeout.as_(int, default=30),
-        max_retries=config.openai.max_retries.as_(int, default=3),
-        temperature=config.openai.temperature.as_(float, default=0.7),
-        max_tokens=config.openai.max_tokens.as_(int, default=None),
+        api_key=config.openai.api_key,
+        model=config.openai.model,
+        base_url=config.openai.base_url,
+        timeout=config.openai.timeout,
+        max_retries=config.openai.max_retries,
+        temperature=config.openai.temperature,
+        max_tokens=config.openai.max_tokens,
     )
 
     # 从环境变量创建配置的备用方案
