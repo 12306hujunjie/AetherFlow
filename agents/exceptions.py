@@ -99,3 +99,43 @@ class ToolExecutionException(AgentException):
     ) -> None:
         self.tool_name = tool_name
         super().__init__(message, agent_type="tool", **kwargs)
+
+
+# ReActAgent specific exceptions
+class AgentError(AgentException):
+    """ReActAgent基础异常类。"""
+
+    def __init__(self, message: str, **kwargs: Any) -> None:
+        super().__init__(message, agent_type="react_agent", **kwargs)
+
+
+class AgentConfigurationError(AgentError):
+    """ReActAgent配置错误。"""
+
+    pass
+
+
+class AgentExecutionError(AgentError):
+    """ReActAgent执行错误。"""
+
+    pass
+
+
+class AgentToolError(AgentError):
+    """ReActAgent工具相关错误。"""
+
+    def __init__(
+        self, message: str, tool_name: str | None = None, **kwargs: Any
+    ) -> None:
+        self.tool_name = tool_name
+        super().__init__(message, **kwargs)
+
+
+class SessionError(AgentError):
+    """会话相关错误。"""
+
+    def __init__(
+        self, message: str, session_id: str | None = None, **kwargs: Any
+    ) -> None:
+        self.session_id = session_id
+        super().__init__(message, **kwargs)

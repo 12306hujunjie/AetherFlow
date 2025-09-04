@@ -33,6 +33,17 @@ from .config import AgentConfig, ConfigLoader, ConfigurationError
 logger = logging.getLogger("aetherflow.agent.container")
 
 
+def _create_tool_executor(registry, max_workers: int, timeout: float):
+    """Create ToolExecutor instance with proper configuration"""
+    from .tools.executor import ToolExecutor
+
+    return ToolExecutor(
+        max_workers=max_workers,
+        default_timeout=timeout,
+        registry=registry,
+    )
+
+
 class AgentContainer(BaseFlowContext):
     """
     ReAct agent dependency injection container extending AetherFlow's BaseFlowContext.
@@ -69,17 +80,20 @@ class AgentContainer(BaseFlowContext):
 
     # === Tool System Services ===
 
-    tool_registry = providers.Singleton(
-        dict,  # Placeholder - will be replaced with actual ToolRegistry
-        auto_discover=config.tools.auto_discover,
-        packages=config.tools.packages,
-    )
+    # Import tools system components here to avoid circular imports
+    @providers.Singleton
+    def tool_registry():
+        from .tools.registry import ToolRegistry
+
+        return ToolRegistry.get_instance()
 
     tool_executor = providers.Singleton(
-        dict,  # Placeholder - will be replaced with actual ToolExecutor
+        lambda registry, max_workers, timeout: _create_tool_executor(
+            registry, max_workers, timeout
+        ),
+        registry=tool_registry,
         max_workers=config.tools.max_workers,
         timeout=config.tools.timeout,
-        retry_config=config.tools.retry,
     )
 
     # === Memory Management Services ===

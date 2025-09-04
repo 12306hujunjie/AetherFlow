@@ -12,6 +12,8 @@ Main Components:
 """
 
 # Core configuration system
+# Main ReActAgent interface
+from .agent import ReActAgent, ReActAgentBuilder, create_agent, create_agent_builder
 from .config import (
     AgentConfig,
     ConfigLoader,
@@ -34,6 +36,18 @@ from .config import (
 
 # Dependency injection container system
 from .container import AgentContainer, ConfigContext, ContainerFactory
+
+# Exceptions
+from .exceptions import (
+    AgentConfigurationError,
+    AgentError,
+    AgentExecutionError,
+    AgentToolError,
+    SessionError,
+)
+
+# Data models
+from .models import AgentResponse, AgentStreamChunk, ReActStep, Session, ToolInfo
 
 
 # Main factory function for convenience
@@ -69,6 +83,23 @@ def create_agent_container(config_file=None, **config_overrides) -> AgentContain
 # Version info
 __version__ = "0.1.0"
 __all__ = [
+    # Main ReActAgent interface
+    "ReActAgent",
+    "ReActAgentBuilder",
+    "create_agent",
+    "create_agent_builder",
+    # Data models
+    "AgentResponse",
+    "AgentStreamChunk",
+    "ReActStep",
+    "Session",
+    "ToolInfo",
+    # Exceptions
+    "AgentError",
+    "AgentConfigurationError",
+    "AgentExecutionError",
+    "AgentToolError",
+    "SessionError",
     # Configuration classes
     "AgentConfig",
     "LLMConfig",
